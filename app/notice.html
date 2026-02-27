@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>公告</title>
+  <style>
+    :root {
+      --bg: #0b1321;
+      --panel: #121d30;
+      --line: rgba(153, 178, 216, 0.28);
+      --text: #e8f2ff;
+      --muted: #9ab0cf;
+      --accent: #ffd46a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      background: linear-gradient(160deg, #0a1322 0%, #0d1a2f 100%);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+
+    .layout {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      padding: 14px;
+      gap: 10px;
+    }
+
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(16, 28, 48, 0.9);
+      padding: 10px 12px;
+    }
+
+    .title {
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .title::before {
+      content: "";
+      width: 4px;
+      height: 16px;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: rgba(13, 24, 41, 0.9);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    .content {
+      flex: 1;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(13, 22, 37, 0.86);
+      padding: 14px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="layout">
+    <div class="head">
+      <div>
+        <div class="title">最新公告</div>
+        <div id="notice-meta" class="meta">加载中...</div>
+      </div>
+      <button id="close-btn" class="btn" type="button">关闭</button>
+    </div>
+    <div id="notice-content" class="content">加载公告中...</div>
+  </div>
+
+  <script>
+    function byId(id) {
+      return document.getElementById(id);
+    }
+
+    function formatTime(ts) {
+      const num = Number(ts);
+      if (!Number.isFinite(num) || num <= 0) return "--";
+      return new Date(num).toLocaleString("zh-CN");
+    }
+
+    async function init() {
+      const metaEl = byId("notice-meta");
+      const contentEl = byId("notice-content");
+      try {
+        const result = await window.nzmApi.getLatestNotice();
+        const data = result?.data || null;
+        if (!data?.content) {
+          metaEl.textContent = "暂无公告内容";
+          contentEl.textContent = "未获取到公告，请稍后重试。";
+          return;
+        }
+
+        metaEl.textContent = `来源：${data.url || "--"} | 获取时间：${formatTime(data.fetchedAt)}`;
+        contentEl.textContent = data.content;
+        await window.nzmApi.markNoticeOpened();
+      } catch (error) {
+        metaEl.textContent = "公告加载失败";
+        contentEl.textContent = String(error?.message || error || "未知错误");
+      }
+    }
+
+    byId("close-btn").addEventListener("click", () => window.close());
+    init();
+  </script>
+</body>
+
+</html>

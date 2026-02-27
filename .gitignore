@@ -1,0 +1,9 @@
+node_modules
+dist
+.wrangler
+out
+release
+*.log
+*_backup*
+*.bak
+NOTICE.md

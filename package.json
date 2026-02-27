@@ -1,0 +1,55 @@
+{
+  "name": "nzm-official-electron",
+  "version": "3.0.0",
+  "private": true,
+  "description": "NZM official endpoint desktop client (Electron)",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build:win": "electron-builder --win nsis",
+    "build:mac": "electron-builder --mac dmg zip"
+  },
+  "devDependencies": {
+    "electron": "^36.2.0",
+    "electron-builder": "^24.13.3",
+    "xlsx": "^0.18.5"
+  },
+  "build": {
+    "appId": "com.nzm.official.client",
+    "productName": "NZMOfficialClient",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "app/**/*",
+      "electron/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "app/bitbug_favicon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "icon": "app/bitbug_favicon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

@@ -1,0 +1,155 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>逆战未来数据统计1.0</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="../public/images/logo_gcd.png" alt="NZM" class="brand-logo" />
+        <div>
+          <h1>逆战未来数据统计</h1>
+          <p>官方数据接口桌面版</p>
+        </div>
+      </div>
+
+      <nav class="main-nav" id="main-nav">
+        <button class="nav-btn active" data-panel="stats">数据统计</button>
+        <button class="nav-btn" data-panel="history">历史战绩</button>
+        <button class="nav-btn" data-panel="local">本地历史</button>
+        <button class="nav-btn" data-panel="collection">游戏图鉴</button>
+      </nav>
+
+      <section class="session-card">
+        <h2>账号绑定</h2>
+        <label for="openid-input">openid</label>
+        <input id="openid-input" type="text" placeholder="输入 openid" autocomplete="off" />
+
+        <label for="token-input">token</label>
+        <input id="token-input" type="text" placeholder="输入 access_token" autocomplete="off" />
+
+        <div class="session-actions">
+          <button id="save-token-btn">保存并加载</button>
+          <button id="refresh-all-btn" class="ghost">刷新数据</button>
+          <!-- <button id="clear-token-btn" class="ghost danger">清空</button> -->
+        </div>
+        <div class="log-toggle-row hidden">
+          <label for="log-window-toggle">日志窗口</label>
+          <input id="log-window-toggle" type="checkbox" />
+        </div>
+        <div class="open-source-tip">
+          <div>开源地址：<a href="https://github.com/scripted-C20/nzmLocalData" target="_blank" rel="noopener noreferrer">https://github.com/scripted-C20/nzmLocalData</a></div>
+          <div>谨防上当受骗</div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <h2 id="panel-title">官方历史数据（小程序）</h2>
+        <div class="top-actions">
+          <button id="notice-toggle-btn" class="ghost notice-icon-btn" title="公告" aria-label="公告">📢</button>
+          <button id="refresh-short-btn" class="ghost">刷新状态</button>
+        </div>
+      </header>
+
+      <section id="panel-stats" class="panel active">
+        <div class="stats-layout">
+          <div class="stats-main">
+            <div class="section-title">官方历史数据 <span class="sub-title">（小程序）</span></div>
+            <div id="stats-cards" class="card-grid"></div>
+
+            <div class="section-title">近期战绩统计 <span class="sub-title">（最近30天/100场）</span></div>
+            <div id="recent-cards" class="card-grid"></div>
+
+            <div class="section-title">近期模式统计 <span class="sub-title">（不含排位）</span></div>
+            <div id="mode-cards" class="mode-grid"></div>
+
+            <div class="section-title">近期地图详情 <span class="sub-title">（近30天/100场次分布）</span></div>
+            <div id="map-cards" class="map-grid"></div>
+          </div>
+
+          <aside class="stats-side">
+            <div class="section-title small">武器碎片</div>
+            <div id="fragment-list" class="fragment-list"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="panel-history" class="panel">
+        <div class="section-title">历史对局记录</div>
+        <div class="history-toolbar">
+          <select id="history-mode-select" class="history-filter-select">
+            <option value="all">全部模式</option>
+          </select>
+          <select id="history-diff-select" class="history-filter-select">
+            <option value="all">全部难度</option>
+          </select>
+          <select id="history-mapid-select" class="history-filter-select">
+            <option value="all">全部地图</option>
+          </select>
+          <button id="history-filter-apply-btn" class="ghost">查询</button>
+          <button id="history-prev-btn" class="ghost">上一页</button>
+          <span id="history-page-info">第 1 页 / 共 1 页</span>
+          <button id="history-next-btn" class="ghost">下一页</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
+      </section>
+
+      <section id="panel-local" class="panel">
+        <div class="section-title">本地历史 <span class="sub-title">（地图详情累计）</span></div>
+        <div class="history-toolbar">
+          <button id="local-clear-btn" class="ghost danger">清除全部导入数据</button>
+          <button id="local-template-btn" class="ghost">下载 xlsx 模板</button>
+          <button id="local-import-btn" class="ghost">本地导入（xlsx）</button>
+          <label class="local-filter-toggle" for="local-only-data-toggle">
+            <input id="local-only-data-toggle" type="checkbox" checked />
+            仅显示有数据
+          </label>
+          <span id="local-meta-info" class="local-meta-info">本地记录 0 场</span>
+        </div>
+        <div id="local-map-cards" class="map-grid"></div>
+      </section>
+
+      <section id="panel-collection" class="panel">
+        <div class="section-title">我的图鉴</div>
+        <div class="collection-tabs" id="collection-tabs">
+          <button class="chip active" data-collection="weapons">武器图鉴</button>
+          <button class="chip" data-collection="traps">陷阱图鉴</button>
+          <button class="chip" data-collection="plugins">插件图鉴</button>
+        </div>
+        <div id="collection-summary" class="collection-summary"></div>
+        <div id="collection-grid" class="collection-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="global-toast" class="global-toast hidden"></div>
+
+  <div id="notice-modal" class="notice-modal hidden">
+    <div class="notice-dialog">
+      <div class="notice-header">
+        <div>
+          <div class="notice-title">公告</div>
+          <div id="notice-meta" class="notice-meta">暂无公告</div>
+        </div>
+        <button id="notice-close-btn" class="ghost" type="button">关闭</button>
+      </div>
+      <div id="notice-body" class="notice-body">暂无公告内容</div>
+    </div>
+  </div>
+
+  <div id="notice-image-viewer" class="notice-image-viewer hidden">
+    <img id="notice-image-viewer-img" alt="公告图片预览" />
+  </div>
+
+  <script src="./renderer.js"></script>
+</body>
+
+</html>
