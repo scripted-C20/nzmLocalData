@@ -7,17 +7,17 @@
 
 - 工具非本人写的 从nzm.haman.moe 里面得到的 注意辨别 自己有更好的抓包方式请勿使用
 - 不要把Cookie发送&暴露给任何人！
-- ![工具下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I)
+- [工具下载地址]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I>
 
 ## 工具exe下载
 
-![下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQDY6zw3MDP2QI7hV6CuXUMHAaap-nNQezsd0jGJ58qtISc?e=ZhCW1o)
+[下载地址]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQDY6zw3MDP2QI7hV6CuXUMHAaap-nNQezsd0jGJ58qtISc?e=ZhCW1o>
 
 ## 功能截图
 
-![应用截图1](https://gitee.com/returnee/nzm-notice/raw/master/330a3121-9c6f-4a4a-bb5f-ea0b989624d3.png)
-![应用截图2](https://gitee.com/returnee/nzm-notice/raw/master/8081f656-fa46-4fe6-9f97-4802460d905f.png)
-![应用截图3](https://gitee.com/returnee/nzm-notice/raw/master/8578f9cc-b8f8-4e04-a2ec-89f0cb60f3f3.png)
+![应用截图1](screenshot/1.png)
+![应用截图2](screenshot/2.png)
+![应用截图3](screenshot/3.png)
 
 ## 功能概览（数据都在本地）
 
@@ -69,6 +69,6 @@ npm run build:mac（没设备自测）
 可直接在公告内容中使用以下赞助二维码：
 
 - 微信赞助  
-  ![微信赞助](https://gitee.com/returnee/nzm-notice/raw/master/109ca48c174d1c4960861cc0cba7b114.png)
+  ![微信赞助](screenshot/wx.png)
 - 支付宝赞助  
-  ![支付宝赞助](https://gitee.com/returnee/nzm-notice/raw/master/5adfe08bd18914fa701ab08bb319915f.jpg)
+  ![支付宝赞助](screenshot/zfb.png)
