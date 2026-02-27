@@ -71,4 +71,4 @@ npm run build:mac（没设备自测）
 - 微信赞助  
   ![微信赞助](screenshot/wx.png)
 - 支付宝赞助  
-  ![支付宝赞助](screenshot/zfb.png)
+  ![支付宝赞助](screenshot/zfb.jpg)
