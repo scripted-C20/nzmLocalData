@@ -7,11 +7,17 @@
 
 - 工具非本人写的 从nzm.haman.moe 里面得到的 注意辨别 自己有更好的抓包方式请勿使用
 - 不要把Cookie发送&暴露给任何人！
+- 有梯子的
 - [工具下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I)
+- 移动云盘
+- [下载地址](https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0)
 
 ## 工具exe下载
 
-[下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQDY6zw3MDP2QI7hV6CuXUMHAaap-nNQezsd0jGJ58qtISc?e=ZhCW1o)
+- 有梯子的
+- [下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQDY6zw3MDP2QI7hV6CuXUMHAaap-nNQezsd0jGJ58qtISc?e=ZhCW1o)
+- 移动云盘
+- [下载地址](https://yun.139.com/shareweb/#/w/i/2sUfJ6TsfFxxs)
 
 ## 功能截图
 
