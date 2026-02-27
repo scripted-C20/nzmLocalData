@@ -20,7 +20,8 @@
     "productName": "NZMOfficialClient",
     "asar": true,
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "files": [
       "app/**/*",
@@ -29,7 +30,7 @@
       "package.json"
     ],
     "win": {
-      "icon": "app/bitbug_favicon.ico",
+      "icon": "icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -49,7 +50,10 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico"
     }
   }
 }
