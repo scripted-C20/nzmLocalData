@@ -1,5 +1,10 @@
 {
+  "activeUin": "",
+  "uin": "",
   "openid": "",
   "accessToken": "",
-  "updatedAt": 1772185097905
+  "nickname": "",
+  "avatar": "",
+  "accounts": [],
+  "updatedAt": 1772356218870
 }

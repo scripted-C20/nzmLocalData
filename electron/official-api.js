@@ -245,6 +245,20 @@ async function fetchUserSummary(cookie) {
   );
 }
 
+async function fetchUserInfo(cookie) {
+  const data = await postOfficialApi(
+    cookie,
+    "user.info",
+    { seasonID: 1 },
+    OFFICIAL_ENDPOINTS.miniProgramRecordPage
+  );
+
+  if (data?.data && typeof data.data === "object") {
+    return data.data;
+  }
+  return data && typeof data === "object" ? data : {};
+}
+
 function buildGameListParam(page, limit = 10, options = {}) {
   const param = {
     seasonID: 1,
@@ -792,6 +806,7 @@ module.exports = {
   buildFixedCookie,
   normalizeCookie,
   setApiLogHandler,
+  fetchUserInfo,
   fetchConfigList,
   fetchStats,
   fetchHistory,

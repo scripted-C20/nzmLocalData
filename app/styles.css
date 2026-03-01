@@ -122,6 +122,14 @@ body {
   padding: 12px;
 }
 
+.cloud-settings-btn {
+  width: 36px;
+  min-width: 36px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
 .session-card h2 {
   margin: 0 0 10px;
   font-size: 20px;
@@ -141,7 +149,8 @@ body {
   color: var(--muted);
 }
 
-input[type="text"] {
+input[type="text"],
+.session-card select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -213,6 +222,23 @@ button.ghost {
 button.ghost.danger {
   color: #ffc7c7;
   border-color: rgba(240, 112, 112, 0.4);
+}
+
+button.ghost.danger.danger-critical {
+  color: #fff;
+  border-color: rgba(255, 126, 126, 0.88);
+  background: linear-gradient(180deg, rgba(173, 34, 34, 0.96), rgba(126, 18, 18, 0.96));
+  box-shadow: 0 6px 18px rgba(150, 27, 27, 0.45);
+}
+
+button.ghost.danger.danger-critical:hover {
+  background: linear-gradient(180deg, rgba(194, 40, 40, 0.98), rgba(143, 20, 20, 0.98));
+  border-color: rgba(255, 152, 152, 0.95);
+}
+
+button.ghost.danger.danger-critical:disabled {
+  opacity: 0.55;
+  box-shadow: none;
 }
 
 .status {
@@ -566,6 +592,15 @@ button.ghost.danger {
   flex-wrap: wrap;
 }
 
+.toolbar-divider {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 8px;
+  border: 1px solid rgba(143, 172, 209, 0.25);
+  border-radius: 999px;
+  background: rgba(14, 24, 41, 0.55);
+}
+
 .history-filter-select {
   min-width: 130px;
   border: 1px solid var(--line);
@@ -658,6 +693,30 @@ button.ghost.danger {
 
 .tag-lose {
   color: var(--red);
+}
+
+.tag-source {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(143, 172, 209, 0.35);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.tag-source-official {
+  color: #9cc7ff;
+  border-color: rgba(105, 160, 231, 0.45);
+  background: rgba(23, 46, 74, 0.45);
+}
+
+.tag-source-json {
+  color: #ffd49a;
+  border-color: rgba(229, 167, 87, 0.45);
+  background: rgba(60, 39, 14, 0.5);
 }
 
 .history-score {
@@ -1114,6 +1173,38 @@ button.ghost.danger {
   border: 1px solid rgba(145, 170, 206, 0.35);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55);
   cursor: zoom-out;
+}
+
+.qiniu-dialog {
+  width: min(640px, 92vw);
+}
+
+.qiniu-form {
+  padding: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.qiniu-form label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.qiniu-form input[type="text"],
+.qiniu-form select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(7, 16, 30, 0.92);
+  color: var(--text);
+  padding: 10px;
+  outline: none;
+  font-size: 14px;
+}
+
+.qiniu-actions {
+  margin: 0;
+  padding: 0 14px 14px;
 }
 
 .empty-placeholder {

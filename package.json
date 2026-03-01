@@ -55,5 +55,8 @@
       "uninstallerIcon": "icon.ico",
       "installerHeaderIcon": "icon.ico"
     }
+  },
+  "dependencies": {
+    "qiniu": "^7.15.1"
   }
 }

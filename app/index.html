@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>逆战未来数据统计1.0</title>
+  <title>逆战未来数据统计2.0</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 
@@ -22,12 +22,18 @@
       <nav class="main-nav" id="main-nav">
         <button class="nav-btn active" data-panel="stats">数据统计</button>
         <button class="nav-btn" data-panel="history">历史战绩</button>
-        <button class="nav-btn" data-panel="local">本地历史</button>
+        <button class="nav-btn" data-panel="local">本地统计</button>
+        <button class="nav-btn" data-panel="local-battle">本地战绩</button>
         <button class="nav-btn" data-panel="collection">游戏图鉴</button>
       </nav>
 
       <section class="session-card">
         <h2>账号绑定</h2>
+        <label for="account-select">已保存账号</label>
+        <select id="account-select">
+          <option value="">暂无已保存账号</option>
+        </select>
+
         <label for="openid-input">openid</label>
         <input id="openid-input" type="text" placeholder="输入 openid" autocomplete="off" />
 
@@ -37,17 +43,19 @@
         <div class="session-actions">
           <button id="save-token-btn">保存并加载</button>
           <button id="refresh-all-btn" class="ghost">刷新数据</button>
-          <!-- <button id="clear-token-btn" class="ghost danger">清空</button> -->
+          <!-- <button  id="clear-token-btn" class="ghost danger">清空</button> -->
         </div>
         <div class="log-toggle-row hidden">
           <label for="log-window-toggle">日志窗口</label>
           <input id="log-window-toggle" type="checkbox" />
         </div>
         <div class="open-source-tip">
-          <div>开源地址：<a href="https://github.com/scripted-C20/nzmLocalData" target="_blank" rel="noopener noreferrer">https://github.com/scripted-C20/nzmLocalData</a></div>
+          <div>开源地址：<a href="https://github.com/scripted-C20/nzmLocalData" target="_blank"
+              rel="noopener noreferrer">https://github.com/scripted-C20/nzmLocalData</a></div>
           <div>谨防上当受骗</div>
         </div>
       </section>
+
     </aside>
 
     <main class="content">
@@ -55,6 +63,7 @@
         <h2 id="panel-title">官方历史数据（小程序）</h2>
         <div class="top-actions">
           <button id="notice-toggle-btn" class="ghost notice-icon-btn" title="公告" aria-label="公告">📢</button>
+          <button id="refresh-local-by-room-btn" class="ghost" title="根据 dsRoomId 同步字段">字段同步</button>
           <button id="refresh-short-btn" class="ghost">刷新状态</button>
         </div>
       </header>
@@ -91,10 +100,6 @@
           <select id="history-diff-select" class="history-filter-select">
             <option value="all">全部难度</option>
           </select>
-          <select id="history-mapid-select" class="history-filter-select">
-            <option value="all">全部地图</option>
-          </select>
-          <button id="history-filter-apply-btn" class="ghost">查询</button>
           <button id="history-prev-btn" class="ghost">上一页</button>
           <span id="history-page-info">第 1 页 / 共 1 页</span>
           <button id="history-next-btn" class="ghost">下一页</button>
@@ -102,12 +107,42 @@
         <div id="history-list" class="history-list"></div>
       </section>
 
+      <section id="panel-local-battle" class="panel">
+        <div class="section-title">本地对局记录 <span class="sub-title">（来自本地 JSON）</span></div>
+        <div class="history-toolbar">
+          <select id="local-battle-mode-select" class="history-filter-select">
+            <option value="all">全部模式</option>
+          </select>
+          <select id="local-battle-diff-select" class="history-filter-select">
+            <option value="all">全部难度</option>
+          </select>
+          <select id="local-battle-map-select" class="history-filter-select">
+            <option value="all">全部地图</option>
+          </select>
+          <button id="local-battle-prev-btn" class="ghost">上一页</button>
+          <span id="local-battle-page-info">第 1 页 / 共 1 页</span>
+          <button id="local-battle-next-btn" class="ghost">下一页</button>
+        </div>
+        <div id="local-battle-list" class="history-list"></div>
+      </section>
+
       <section id="panel-local" class="panel">
-        <div class="section-title">本地历史 <span class="sub-title">（地图详情累计）</span></div>
+        <div class="section-title">本地统计 <span class="sub-title">（地图详情累计）</span></div>
         <div class="history-toolbar">
           <button id="local-clear-btn" class="ghost danger">清除全部导入数据</button>
-          <button id="local-template-btn" class="ghost">下载 xlsx 模板</button>
-          <button id="local-import-btn" class="ghost">本地导入（xlsx）</button>
+          <button id="local-reset-btn" class="ghost danger danger-critical">清空所有数据</button>
+          <span class="toolbar-divider">模板方式</span>
+          <button id="local-template-btn" class="ghost">下载模板（xlsx）</button>
+          <button id="local-import-btn" class="ghost">导入（xlsx）</button>
+          <button id="local-export-btn" class="ghost">导出（xlsx）</button>
+          <span class="toolbar-divider">JSON方式</span>
+          <button id="local-json-import-btn" class="ghost">导入记录（json）</button>
+          <button id="local-json-export-btn" class="ghost">导出记录（json）</button>
+          <span class="toolbar-divider">云同步</span>
+          <button id="local-cloud-sync-btn" class="ghost">同步到七牛云</button>
+          <button id="local-cloud-pull-btn" class="ghost">云拉取</button>
+          <button id="local-cloud-settings-btn" class="ghost cloud-settings-btn" title="七牛云设置"
+            aria-label="七牛云设置">⚙</button>
           <label class="local-filter-toggle" for="local-only-data-toggle">
             <input id="local-only-data-toggle" type="checkbox" checked />
             仅显示有数据
@@ -147,6 +182,43 @@
 
   <div id="notice-image-viewer" class="notice-image-viewer hidden">
     <img id="notice-image-viewer-img" alt="公告图片预览" />
+  </div>
+
+  <div id="qiniu-modal" class="notice-modal hidden">
+    <div class="notice-dialog qiniu-dialog">
+      <div class="notice-header">
+        <div>
+          <div class="notice-title">七牛云配置</div>
+          <div class="notice-meta">用于本地统计云同步</div>
+        </div>
+        <button id="qiniu-close-btn" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="qiniu-form">
+        <label for="qiniu-access-key-input">AccessKey</label>
+        <input id="qiniu-access-key-input" type="text" placeholder="输入 AccessKey" autocomplete="off" />
+
+        <label for="qiniu-secret-key-input">SecretKey</label>
+        <input id="qiniu-secret-key-input" type="text" placeholder="输入 SecretKey" autocomplete="off" />
+
+        <label for="qiniu-protocol-select">协议</label>
+        <select id="qiniu-protocol-select">
+          <option value="https">https</option>
+          <option value="http">http</option>
+        </select>
+
+        <label for="qiniu-domain-input">域名</label>
+        <input id="qiniu-domain-input" type="text" placeholder="例如 cdn.example.com" autocomplete="off" />
+
+        <label for="qiniu-path-input">路径</label>
+        <input id="qiniu-path-input" type="text" placeholder="例如 nzm/local-stats（可留空）" autocomplete="off" />
+
+        <label for="qiniu-bucket-input">存储空间名称</label>
+        <input id="qiniu-bucket-input" type="text" placeholder="输入 bucket 名称" autocomplete="off" />
+      </div>
+      <div class="session-actions qiniu-actions">
+        <button id="qiniu-save-btn">保存并立即测试连通性</button>
+      </div>
+    </div>
   </div>
 
   <script src="./renderer.js"></script>

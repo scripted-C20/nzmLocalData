@@ -14,8 +14,7 @@ const state = {
   historyPageSize: 10,
   historyFilters: {
     mode: "all",
-    difficulty: "all",
-    mapId: "all"
+    difficulty: "all"
   },
   historyRemote: {
     list: [],
@@ -32,9 +31,28 @@ const state = {
   loadingCount: 0,
   toastTimer: null,
   localOnlyWithData: true,
+  localBattlePage: 1,
+  localBattlePageSize: 10,
+  localBattleFilters: {
+    mode: "all",
+    difficulty: "all",
+    mapKey: "all"
+  },
   latestNotice: null,
-  noticeAutoShownHash: ""
+  noticeAutoShownHash: "",
+  accounts: [],
+  activeUin: "",
+  qiniuConfig: {
+    accessKey: "",
+    secretKey: "",
+    protocol: "https",
+    domain: "",
+    path: "",
+    bucket: ""
+  }
 };
+
+const LOCAL_BATTLE_PAGE_SIZE = 10;
 
 function toNumber(value) {
   const normalized =
@@ -59,6 +77,34 @@ function formatDuration(seconds) {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}分${s}秒`;
+}
+
+function parseDateTimeToMs(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function resolveLocalBattleDurationSeconds(game) {
+  const directDuration = toNumber(
+    pick(game, ["iUseTime", "useTime", "duration", "iDuration", "costTime"], 0)
+  );
+  if (directDuration > 0) {
+    return Math.floor(directDuration);
+  }
+
+  const startMs = parseDateTimeToMs(
+    pick(game, ["dtGameStartTime", "startTime"], "")
+  );
+  const endMs = parseDateTimeToMs(
+    pick(game, ["dtEventTime", "eventTime"], "")
+  );
+  if (startMs > 0 && endMs > startMs) {
+    return Math.floor((endMs - startMs) / 1000);
+  }
+  return 0;
 }
 
 function formatTime(value) {
@@ -157,6 +203,101 @@ function setLogToggle(visible) {
   if (checkbox) {
     checkbox.checked = state.logWindowVisible;
   }
+}
+
+function formatAccountLabel(account) {
+  const uin = String(account?.uin || "").trim();
+  const nickname = String(account?.nickname || "").trim();
+  if (nickname) {
+    return nickname;
+  }
+  return uin || "未命名账号";
+}
+
+function renderAccountSelect() {
+  const select = byId("account-select");
+  if (!select) {
+    return;
+  }
+  const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+  select.innerHTML = "";
+
+  if (!accounts.length) {
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "暂无已保存账号";
+    select.appendChild(empty);
+    select.value = "";
+    return;
+  }
+
+  accounts.forEach((account) => {
+    const option = document.createElement("option");
+    option.value = String(account?.uin || "").trim();
+    option.textContent = formatAccountLabel(account);
+    select.appendChild(option);
+  });
+
+  const active =
+    String(state.activeUin || "").trim() ||
+    String(accounts[0]?.uin || "").trim();
+  if ([...select.options].some((x) => x.value === active)) {
+    select.value = active;
+  }
+}
+
+function fillQiniuConfigInputs(config = {}) {
+  const data = config && typeof config === "object" ? config : {};
+  const mapping = [
+    ["qiniu-access-key-input", "accessKey"],
+    ["qiniu-secret-key-input", "secretKey"],
+    ["qiniu-protocol-select", "protocol"],
+    ["qiniu-domain-input", "domain"],
+    ["qiniu-path-input", "path"],
+    ["qiniu-bucket-input", "bucket"]
+  ];
+  mapping.forEach(([id, key]) => {
+    const input = byId(id);
+    if (!input) return;
+    const raw = String(data?.[key] || "").trim();
+    if (key === "protocol") {
+      input.value = raw.toLowerCase() === "http" ? "http" : "https";
+      return;
+    }
+    input.value = raw;
+  });
+}
+
+function readQiniuConfigInputs() {
+  const protocolRaw = String(byId("qiniu-protocol-select")?.value || "https")
+    .trim()
+    .toLowerCase();
+  const protocol = protocolRaw === "http" ? "http" : "https";
+  return {
+    accessKey: String(byId("qiniu-access-key-input")?.value || "").trim(),
+    secretKey: String(byId("qiniu-secret-key-input")?.value || "").trim(),
+    protocol,
+    domain: String(byId("qiniu-domain-input")?.value || "").trim(),
+    path: String(byId("qiniu-path-input")?.value || "").trim(),
+    bucket: String(byId("qiniu-bucket-input")?.value || "").trim()
+  };
+}
+
+function openQiniuModal() {
+  const modal = byId("qiniu-modal");
+  if (!modal) {
+    return;
+  }
+  fillQiniuConfigInputs(state.qiniuConfig || {});
+  modal.classList.remove("hidden");
+}
+
+function closeQiniuModal() {
+  const modal = byId("qiniu-modal");
+  if (!modal) {
+    return;
+  }
+  modal.classList.add("hidden");
 }
 
 function setLocalMetaInfo(localMapStats = {}) {
@@ -699,6 +840,126 @@ function getAllMapsFromHistoryConfig(configMapping = null) {
     .sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
 }
 
+function buildLocalMapFilterKey(mapName, modeName) {
+  const normalizedMapName = String(mapName || "").trim();
+  const normalizedModeName = toDisplayModeName(modeName || "");
+  return `${normalizedMapName}__mode__${normalizedModeName}`;
+}
+
+function formatLocalMapFilterLabel(mapName, modeName) {
+  const normalizedMapName = String(mapName || "").trim() || "未知地图";
+  const normalizedModeName = toDisplayModeName(modeName || "");
+  return normalizedModeName
+    ? `${normalizedMapName}（${normalizedModeName}）`
+    : normalizedMapName;
+}
+
+function getLocalBattleAllGames() {
+  return Array.isArray(state.localStats?.localRecords) ? state.localStats.localRecords : [];
+}
+
+function renderLocalBattleFilterOptions() {
+  const modeSelect = byId("local-battle-mode-select");
+  const diffSelect = byId("local-battle-diff-select");
+  const mapSelect = byId("local-battle-map-select");
+  if (!modeSelect || !diffSelect || !mapSelect) {
+    return;
+  }
+
+  const allGames = getLocalBattleAllGames();
+  const allMapList = getAllMapsFromHistoryConfig(
+    state.historyRemote?.configMapping || getStatsPayload()?.configMapping || null
+  );
+
+  const optionMap = new Map();
+  allMapList.forEach((item) => {
+    const mapName = String(item?.mapName || "").trim();
+    if (!mapName) return;
+    const modeName = toDisplayModeName(item?.modeName || "");
+    const key = buildLocalMapFilterKey(mapName, modeName);
+    if (!optionMap.has(key)) {
+      optionMap.set(key, {
+        value: key,
+        label: formatLocalMapFilterLabel(mapName, modeName)
+      });
+    }
+  });
+  allGames.forEach((item) => {
+    const mapName = inferMapName(item);
+    const modeName = inferModeName(item);
+    const key = buildLocalMapFilterKey(mapName, modeName);
+    if (!optionMap.has(key)) {
+      optionMap.set(key, {
+        value: key,
+        label: formatLocalMapFilterLabel(mapName, modeName)
+      });
+    }
+  });
+
+  const optionList = [...optionMap.values()].sort((a, b) =>
+    a.label.localeCompare(b.label, "zh-CN")
+  );
+
+  const modeSet = new Set();
+  const diffSet = new Set();
+  allGames.forEach((game) => {
+    const modeName = inferModeName(game);
+    if (modeName) {
+      modeSet.add(modeName);
+    }
+    const diffName = inferDifficultyName(game);
+    if (diffName) {
+      diffSet.add(diffName);
+    }
+  });
+  const modeOptions = ["all", ...[...modeSet].sort((a, b) => a.localeCompare(b, "zh-CN"))];
+  const diffOptions = ["all", ...[...diffSet].sort((a, b) => a.localeCompare(b, "zh-CN"))];
+
+  modeSelect.innerHTML = "";
+  modeOptions.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "all" ? "全部模式" : value;
+    modeSelect.appendChild(option);
+  });
+
+  diffSelect.innerHTML = "";
+  diffOptions.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "all" ? "全部难度" : value;
+    diffSelect.appendChild(option);
+  });
+
+  mapSelect.innerHTML = "";
+  const allOption = document.createElement("option");
+  allOption.value = "all";
+  allOption.textContent = "全部地图";
+  mapSelect.appendChild(allOption);
+
+  optionList.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    mapSelect.appendChild(option);
+  });
+
+  state.localBattleFilters.mode = modeOptions.includes(state.localBattleFilters.mode)
+    ? state.localBattleFilters.mode
+    : "all";
+  state.localBattleFilters.difficulty = diffOptions.includes(state.localBattleFilters.difficulty)
+    ? state.localBattleFilters.difficulty
+    : "all";
+  state.localBattleFilters.mapKey =
+    state.localBattleFilters.mapKey &&
+    [...mapSelect.options].some((x) => x.value === state.localBattleFilters.mapKey)
+      ? state.localBattleFilters.mapKey
+      : "all";
+  modeSelect.value = state.localBattleFilters.mode;
+  diffSelect.value = state.localBattleFilters.difficulty;
+  mapSelect.value = state.localBattleFilters.mapKey;
+}
+
 function isOnlyHuntDifficulties(configMapping = null) {
   const set = getConfiguredDifficultyNames(configMapping);
   if (!set.size) return false;
@@ -869,6 +1130,35 @@ function inferMapName(game) {
   if (mode.includes("时空") || mode.includes("追猎")) return "时空追猎地图";
   if (mode.includes("机甲") || mode.includes("排位")) return "排位地图";
   return "僵尸猎场地图";
+}
+
+function inferLocalRecordSourceType(game) {
+  const raw = String(
+    pick(game, ["sourceType", "recordSource", "dataSource", "source"], "")
+  )
+    .trim()
+    .toLowerCase();
+  if (!raw) {
+    return "official-sync";
+  }
+  if (
+    raw === "json-transfer" ||
+    raw === "json-import" ||
+    raw === "json_import" ||
+    raw === "local-export-import" ||
+    raw === "local-json"
+  ) {
+    return "json-transfer";
+  }
+  return "official-sync";
+}
+
+function inferLocalRecordSourceLabel(game) {
+  const sourceType = inferLocalRecordSourceType(game);
+  if (sourceType === "json-transfer") {
+    return "JSON导入";
+  }
+  return "官方同步";
 }
 
 function getAllGames() {
@@ -1828,8 +2118,7 @@ function getFilteredHistoryGames() {
 function renderHistoryFilterOptions() {
   const modeSelect = byId("history-mode-select");
   const diffSelect = byId("history-diff-select");
-  const mapSelect = byId("history-mapid-select");
-  if (!modeSelect || !diffSelect || !mapSelect) {
+  if (!modeSelect || !diffSelect) {
     return;
   }
 
@@ -1843,27 +2132,6 @@ function renderHistoryFilterOptions() {
   });
 
   const modeOptionMap = getModeOptionMap(configMapping);
-  const rawMapOptionList = getAllMapsFromHistoryConfig(configMapping).map((item) => ({
-    value: item.mapId,
-    label: item.label
-  }));
-
-  const labelCount = new Map();
-  rawMapOptionList.forEach((item) => {
-    labelCount.set(item.label, (labelCount.get(item.label) || 0) + 1);
-  });
-
-  const mapOptionList = rawMapOptionList
-    .map((item) => {
-      if ((labelCount.get(item.label) || 0) <= 1) {
-        return item;
-      }
-      return {
-        ...item,
-        label: `${item.label}（ID:${item.value}）`
-      };
-    })
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
 
   const modeOptions = ["all", ...[...modeOptionMap.keys()]];
   const dynamicDiffList = [...diffSet].filter(Boolean);
@@ -1877,7 +2145,6 @@ function renderHistoryFilterOptions() {
 
   modeSelect.innerHTML = "";
   diffSelect.innerHTML = "";
-  mapSelect.innerHTML = "";
 
   modeOptions.forEach((value) => {
     const option = document.createElement("option");
@@ -1894,29 +2161,12 @@ function renderHistoryFilterOptions() {
     diffSelect.appendChild(option);
   });
 
-  const mapAllOption = document.createElement("option");
-  mapAllOption.value = "all";
-  mapAllOption.textContent = "全部地图";
-  mapSelect.appendChild(mapAllOption);
-  mapOptionList.forEach((item) => {
-    const option = document.createElement("option");
-    option.value = item.value;
-    option.textContent = item.label;
-    mapSelect.appendChild(option);
-  });
-
   modeSelect.value = modeOptions.includes(state.historyFilters.mode)
     ? state.historyFilters.mode
     : "all";
   diffSelect.value = diffOptions.includes(state.historyFilters.difficulty)
     ? state.historyFilters.difficulty
     : "all";
-  state.historyFilters.mapId =
-    state.historyFilters.mapId &&
-    [...mapSelect.options].some((x) => x.value === state.historyFilters.mapId)
-      ? state.historyFilters.mapId
-      : "all";
-  mapSelect.value = state.historyFilters.mapId;
 }
 
 function getHistoryPageCount() {
@@ -2018,6 +2268,149 @@ function renderHistoryList() {
   renderHistoryPager();
 }
 
+function getFilteredLocalBattleGames() {
+  const allGames = getLocalBattleAllGames();
+  const modeFilter = String(state.localBattleFilters.mode || "all").trim();
+  const diffFilter = String(state.localBattleFilters.difficulty || "all").trim();
+  const mapKeyFilter = String(state.localBattleFilters.mapKey || "all").trim();
+
+  return allGames.filter((game) => {
+    const mode = inferModeName(game);
+    if (modeFilter !== "all" && mode !== modeFilter) {
+      return false;
+    }
+    const diff = inferDifficultyName(game);
+    if (diffFilter !== "all" && diff !== diffFilter) {
+      return false;
+    }
+    if (mapKeyFilter !== "all") {
+      const key = buildLocalMapFilterKey(inferMapName(game), mode);
+      if (key !== mapKeyFilter) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function getLocalBattlePageCount(totalCount) {
+  return Math.max(1, Math.ceil(Math.max(0, Number(totalCount) || 0) / LOCAL_BATTLE_PAGE_SIZE));
+}
+
+function renderLocalBattlePager(totalCount) {
+  const pageCount = getLocalBattlePageCount(totalCount);
+  state.localBattlePage = Math.min(Math.max(1, state.localBattlePage), pageCount);
+
+  const info = byId("local-battle-page-info");
+  const prevBtn = byId("local-battle-prev-btn");
+  const nextBtn = byId("local-battle-next-btn");
+  if (info) {
+    info.textContent = `第 ${state.localBattlePage} 页 / 共 ${pageCount} 页`;
+  }
+  if (prevBtn) {
+    prevBtn.disabled = state.localBattlePage <= 1;
+  }
+  if (nextBtn) {
+    nextBtn.disabled = state.localBattlePage >= pageCount;
+  }
+}
+
+function renderLocalBattleList() {
+  const container = byId("local-battle-list");
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+
+  renderLocalBattleFilterOptions();
+
+  const parseEventTime = (game) => {
+    const raw = String(
+      pick(game, ["dtEventTime", "eventTime", "dtGameStartTime", "startTime"], "")
+    ).trim();
+    if (!raw) return 0;
+    const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+    const ts = Date.parse(normalized);
+    return Number.isFinite(ts) ? ts : 0;
+  };
+  const filtered = getFilteredLocalBattleGames().sort((a, b) => parseEventTime(b) - parseEventTime(a));
+  const pageCount = getLocalBattlePageCount(filtered.length);
+  state.localBattlePage = Math.min(Math.max(1, state.localBattlePage), pageCount);
+  const start = (state.localBattlePage - 1) * LOCAL_BATTLE_PAGE_SIZE;
+  const currentList = filtered.slice(start, start + LOCAL_BATTLE_PAGE_SIZE);
+
+  if (!currentList.length) {
+    renderPlaceholder(container, "暂无本地对局记录");
+    renderLocalBattlePager(filtered.length);
+    return;
+  }
+
+  currentList.forEach((game) => {
+    const isWin = toNumber(pick(game, ["isWin", "iIsWin"])) === 1;
+    const mode = inferModeName(game);
+    const diff = inferDifficultyName(game);
+    const map = inferMapName(game);
+    const scoreRaw = pick(game, ["iScore", "score"], "");
+    const score = scoreRaw === "" ? "--" : formatNumber(scoreRaw);
+    const durationSeconds = resolveLocalBattleDurationSeconds(game);
+    const duration = durationSeconds > 0 ? formatDuration(durationSeconds) : "--";
+    const timeText = formatTime(
+      pick(game, ["dtEventTime", "eventTime", "dtGameStartTime", "startTime", "sGameTime", "time", "createTime"], "")
+    );
+    const roomId = getRoomId(game);
+
+    const row = document.createElement("div");
+    row.className = "history-row";
+    row.dataset.roomId = roomId;
+
+    const top = document.createElement("div");
+    top.className = "history-top";
+
+    const title = document.createElement("div");
+    title.className = "history-title";
+
+    const resultTag = document.createElement("span");
+    resultTag.className = isWin ? "tag-win" : "tag-lose";
+    resultTag.textContent = isWin ? "胜利" : "失败";
+
+    const modeTag = document.createElement("span");
+    modeTag.textContent = mode;
+
+    const sourceTag = document.createElement("span");
+    const sourceType = inferLocalRecordSourceType(game);
+    sourceTag.className =
+      sourceType === "json-transfer"
+        ? "tag-source tag-source-json"
+        : "tag-source tag-source-official";
+    sourceTag.textContent = inferLocalRecordSourceLabel(game);
+
+    title.append(resultTag, modeTag, sourceTag);
+
+    const scoreEl = document.createElement("div");
+    scoreEl.className = "history-score";
+    scoreEl.textContent = score;
+
+    top.append(title, scoreEl);
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.textContent = `${map} | ${diff} | ${timeText} | ${duration}`;
+    row.append(top, meta);
+
+    if (roomId) {
+      const expand = document.createElement("button");
+      expand.className = "expand-btn";
+      expand.textContent = "展开详细数据";
+      expand.dataset.roomId = roomId;
+      row.appendChild(expand);
+    }
+
+    container.appendChild(row);
+  });
+
+  renderLocalBattlePager(filtered.length);
+}
+
 async function loadHistoryPage(page = 1) {
   const tokenText = byId("token-input")?.value?.trim();
   if (!tokenText) {
@@ -2035,16 +2428,12 @@ async function loadHistoryPage(page = 1) {
   }
 
   const modeType = String(state.historyFilters.mode || "").trim();
-  const mapId = String(state.historyFilters.mapId || "").trim();
   const query = {
     page,
     limit: state.historyPageSize
   };
   if (modeType && modeType !== "all") {
     query.modeType = modeType;
-  }
-  if (mapId && mapId !== "all") {
-    query.mapId = mapId;
   }
 
   const result = await window.nzmApi.getHistory(query);
@@ -2074,6 +2463,7 @@ function renderAllPanels() {
   renderRecentCards();
   renderModeCards();
   renderMapCards();
+  renderLocalBattleList();
   renderLocalMapCards();
   renderFragmentList();
   renderHistoryList();
@@ -2087,6 +2477,7 @@ async function loadLocalStats() {
     throw new Error(result?.message || "本地统计加载失败");
   }
   state.localStats = result.data || null;
+  renderLocalBattleList();
   renderLocalMapCards();
 }
 
@@ -2141,7 +2532,10 @@ async function refreshAllData() {
       state.stats = statsResult.value;
       state.localStats = {
         localMapStats: statsResult.value?.data?.localMapStats || null,
-        localStatsMeta: statsResult.value?.data?.localStatsMeta || null
+        localStatsMeta: statsResult.value?.data?.localStatsMeta || null,
+        localRecords: Array.isArray(statsResult.value?.data?.localRecords)
+          ? statsResult.value.data.localRecords
+          : []
       };
       state.historyPage = 1;
       hasSuccess = true;
@@ -2195,6 +2589,12 @@ async function onSaveToken() {
       openid,
       accessToken: token
     });
+    const accounts = Array.isArray(result?.data?.accounts) ? result.data.accounts : [];
+    if (accounts.length) {
+      state.accounts = accounts;
+      state.activeUin = String(result?.data?.uin || "").trim();
+      renderAccountSelect();
+    }
     setStatus(result.message || "账号信息已保存", true);
     await refreshAllData();
   } catch (error) {
@@ -2207,13 +2607,24 @@ async function onSaveToken() {
 async function onClearToken() {
   await window.nzmApi.clearAccessToken();
   byId("token-input").value = "";
+  try {
+    const config = await window.nzmApi.getSessionConfig();
+    state.accounts = Array.isArray(config?.data?.accounts) ? config.data.accounts : state.accounts;
+    state.activeUin = String(config?.data?.activeUin || state.activeUin || "").trim();
+    renderAccountSelect();
+  } catch (_) {
+    // no-op
+  }
   state.stats = null;
   state.collection = null;
   state.detailCache.clear();
   state.historyPage = 1;
   state.historyFilters.mode = "all";
   state.historyFilters.difficulty = "all";
-  state.historyFilters.mapId = "all";
+  state.localBattlePage = 1;
+  state.localBattleFilters.mode = "all";
+  state.localBattleFilters.difficulty = "all";
+  state.localBattleFilters.mapKey = "all";
   state.historyRemote = {
     list: [],
     page: 1,
@@ -2223,10 +2634,6 @@ async function onClearToken() {
     hasMore: false,
     configMapping: {}
   };
-  const mapSelect = byId("history-mapid-select");
-  if (mapSelect) {
-    mapSelect.value = "all";
-  }
   renderAllPanels();
   setStatus("已清空本地 token", true);
 }
@@ -2238,11 +2645,39 @@ async function onLocalClear() {
     if (!result?.success) {
       throw new Error(result?.message || "清除导入数据失败");
     }
-    state.localStats = result.data || null;
-    renderLocalMapCards();
+    await loadLocalStats();
     setStatus("已清除全部导入数据", true);
   } catch (error) {
     setStatus(`清除导入数据失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onLocalResetAll() {
+  const confirmed = window.confirm(
+    "将清空本地全部数据（含本地战绩与导入数据），并从历史战绩重新保存到本地，是否继续？"
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    setLoading(true, "正在从历史战绩重建本地数据...");
+    const result = await window.nzmApi.resetLocalStatsFromHistory();
+    if (!result?.success) {
+      throw new Error(result?.message || "重建本地数据失败");
+    }
+    state.localStats = {
+      localMapStats: result?.data?.localMapStats || null,
+      localRecords: Array.isArray(result?.data?.localRecords) ? result.data.localRecords : [],
+      localStatsMeta: result?.data?.localStatsMeta || null
+    };
+    renderLocalBattleList();
+    renderLocalMapCards();
+    setStatus(result?.message || "本地数据已重建", true);
+  } catch (error) {
+    setStatus(`清空并重建失败: ${error.message}`, false);
   } finally {
     setLoading(false);
   }
@@ -2259,14 +2694,29 @@ async function onLocalImport() {
       }
       throw new Error(result?.message || "导入失败");
     }
-    state.localStats = {
-      localMapStats: result?.data?.localMapStats || null,
-      localStatsMeta: result?.data?.localStatsMeta || null
-    };
-    renderLocalMapCards();
+    await loadLocalStats();
     setStatus(result.message || "本地统计导入完成", true);
   } catch (error) {
     setStatus(`导入本地统计失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onLocalExportXlsx() {
+  try {
+    setLoading(true);
+    const result = await window.nzmApi.exportLocalStatsXlsx();
+    if (!result?.success) {
+      if (result?.message === "已取消导出") {
+        setStatus("已取消导出", false);
+        return;
+      }
+      throw new Error(result?.message || "导出失败");
+    }
+    setStatus(result.message || "导出完成", true);
+  } catch (error) {
+    setStatus(`导出本地统计失败: ${error.message}`, false);
   } finally {
     setLoading(false);
   }
@@ -2289,6 +2739,147 @@ async function onLocalTemplateDownload() {
     );
   } catch (error) {
     setStatus(`下载模板失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onLocalJsonImport() {
+  try {
+    setLoading(true);
+    const result = await window.nzmApi.importLocalRecordsJson();
+    if (!result?.success) {
+      if (result?.message === "已取消导入") {
+        setStatus("已取消导入", false);
+        return;
+      }
+      throw new Error(result?.message || "JSON导入失败");
+    }
+    state.localStats = {
+      localMapStats: result?.data?.localMapStats || null,
+      localRecords: Array.isArray(result?.data?.localRecords) ? result.data.localRecords : [],
+      localStatsMeta: result?.data?.localStatsMeta || null
+    };
+    renderLocalBattleList();
+    renderLocalMapCards();
+    setStatus(result.message || "JSON导入完成", true);
+  } catch (error) {
+    setStatus(`JSON导入失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onLocalJsonExport() {
+  try {
+    setLoading(true);
+    const result = await window.nzmApi.exportLocalRecordsJson();
+    if (!result?.success) {
+      if (result?.message === "已取消导出") {
+        setStatus("已取消导出", false);
+        return;
+      }
+      throw new Error(result?.message || "JSON导出失败");
+    }
+    setStatus(result.message || "JSON导出完成", true);
+  } catch (error) {
+    setStatus(`JSON导出失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onSaveQiniuConfig() {
+  try {
+    setLoading(true, "正在保存并测试七牛云连通性...");
+    const payload = readQiniuConfigInputs();
+    const result = await window.nzmApi.saveQiniuConfig(payload);
+    const nextConfig =
+      result?.data?.config && typeof result.data.config === "object"
+        ? result.data.config
+        : result?.data && typeof result.data === "object"
+          ? result.data
+          : payload;
+    state.qiniuConfig = nextConfig;
+    fillQiniuConfigInputs(state.qiniuConfig);
+    if (!result?.success) {
+      setStatus(result?.message || "七牛云配置已保存，但连通性校验失败", false);
+      return;
+    }
+    closeQiniuModal();
+    setStatus(result?.message || "七牛云配置已保存，连通性校验通过（未上传）", true);
+  } catch (error) {
+    setStatus(`保存或测试失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onLocalCloudSync() {
+  try {
+    setLoading(true, "正在同步本地统计到七牛云...");
+    const result = await window.nzmApi.syncLocalStatsToCloud();
+    if (!result?.success) {
+      throw new Error(result?.message || "云同步失败");
+    }
+    const url = String(result?.data?.url || "").trim();
+    setStatus(
+      url ? `${result?.message || "云同步成功"}，${url}` : result?.message || "云同步成功",
+      true
+    );
+  } catch (error) {
+    setStatus(`云同步失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onLocalCloudPull() {
+  try {
+    setLoading(true, "正在从七牛云拉取本地统计...");
+    const result = await window.nzmApi.pullLocalStatsFromCloud();
+    if (!result?.success) {
+      throw new Error(result?.message || "云拉取失败");
+    }
+    state.localStats = {
+      localMapStats: result?.data?.localMapStats || null,
+      localRecords: Array.isArray(result?.data?.localRecords) ? result.data.localRecords : [],
+      localStatsMeta: result?.data?.localStatsMeta || null
+    };
+    renderLocalBattleList();
+    renderLocalMapCards();
+    setStatus(result?.message || "云拉取完成", true);
+  } catch (error) {
+    setStatus(`云拉取失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function onRefreshLocalByRoomId() {
+  try {
+    setLoading(true, "正在根据 dsRoomId 更新本地战绩...");
+    const result = await window.nzmApi.refreshLocalRecordsByRoomId();
+    if (!result?.success) {
+      throw new Error(result?.message || "更新失败");
+    }
+    state.localStats = {
+      localMapStats: result?.data?.localMapStats || null,
+      localRecords: Array.isArray(result?.data?.localRecords) ? result.data.localRecords : [],
+      localStatsMeta: result?.data?.localStatsMeta || null
+    };
+    if (state.stats?.data) {
+      state.stats.data.localMapStats = result?.data?.localMapStats || state.stats.data.localMapStats;
+      state.stats.data.localRecords = Array.isArray(result?.data?.localRecords)
+        ? result.data.localRecords
+        : state.stats.data.localRecords;
+      state.stats.data.localStatsMeta = result?.data?.localStatsMeta || state.stats.data.localStatsMeta;
+    }
+    renderLocalBattleList();
+    renderLocalMapCards();
+    setStatus(result?.message || "本地战绩更新完成", true);
+  } catch (error) {
+    setStatus(`本地战绩更新失败: ${error.message}`, false);
   } finally {
     setLoading(false);
   }
@@ -2561,15 +3152,83 @@ async function onHistoryExpandClick(button) {
 
 function bindEvents() {
   byId("save-token-btn").addEventListener("click", onSaveToken);
+  const accountSelect = byId("account-select");
+  if (accountSelect) {
+    accountSelect.addEventListener("change", async (event) => {
+      const uin = String(event.target.value || "").trim();
+      if (!uin) {
+        return;
+      }
+      try {
+        setLoading(true);
+        const result = await window.nzmApi.switchAccount(uin);
+        if (!result?.success) {
+          throw new Error(result?.message || "切换账号失败");
+        }
+        state.accounts = Array.isArray(result?.data?.accounts) ? result.data.accounts : state.accounts;
+        state.activeUin = String(result?.data?.uin || uin).trim();
+        renderAccountSelect();
+        if (result?.data?.openid) {
+          byId("openid-input").value = result.data.openid;
+        }
+        if (result?.data?.accessToken !== undefined) {
+          byId("token-input").value = String(result.data.accessToken || "");
+        }
+        state.stats = null;
+        state.collection = null;
+        state.detailCache.clear();
+        state.historyPage = 1;
+        state.historyFilters.mode = "all";
+        state.historyFilters.difficulty = "all";
+        state.localBattlePage = 1;
+        state.localBattleFilters.mode = "all";
+        state.localBattleFilters.difficulty = "all";
+        state.localBattleFilters.mapKey = "all";
+        state.historyRemote = {
+          list: [],
+          page: 1,
+          limit: state.historyPageSize,
+          totalPages: null,
+          totalCount: null,
+          hasMore: false,
+          configMapping: {}
+        };
+        await loadLocalStats();
+        setStatus(`已切换账号 ${state.activeUin}`, true);
+        if (String(result?.data?.accessToken || "").trim()) {
+          await refreshAllData();
+        }
+      } catch (error) {
+        setStatus(`切换账号失败: ${error.message}`, false);
+      } finally {
+        setLoading(false);
+      }
+    });
+  }
   const clearBtn = byId("clear-token-btn");
   if (clearBtn) {
     clearBtn.addEventListener("click", onClearToken);
   }
   byId("refresh-all-btn").addEventListener("click", refreshAllData);
   byId("refresh-short-btn").addEventListener("click", refreshAllData);
+  byId("refresh-local-by-room-btn").addEventListener("click", onRefreshLocalByRoomId);
   byId("local-clear-btn").addEventListener("click", onLocalClear);
+  byId("local-reset-btn").addEventListener("click", onLocalResetAll);
   byId("local-template-btn").addEventListener("click", onLocalTemplateDownload);
   byId("local-import-btn").addEventListener("click", onLocalImport);
+  byId("local-export-btn").addEventListener("click", onLocalExportXlsx);
+  byId("local-json-import-btn").addEventListener("click", onLocalJsonImport);
+  byId("local-json-export-btn").addEventListener("click", onLocalJsonExport);
+  byId("local-cloud-sync-btn").addEventListener("click", onLocalCloudSync);
+  byId("local-cloud-pull-btn").addEventListener("click", onLocalCloudPull);
+  byId("local-cloud-settings-btn").addEventListener("click", openQiniuModal);
+  byId("qiniu-save-btn").addEventListener("click", onSaveQiniuConfig);
+  byId("qiniu-close-btn").addEventListener("click", closeQiniuModal);
+  byId("qiniu-modal").addEventListener("click", (event) => {
+    if (event.target === byId("qiniu-modal")) {
+      closeQiniuModal();
+    }
+  });
   byId("notice-toggle-btn").addEventListener("click", async () => {
     const modal = byId("notice-modal");
     if (!modal) return;
@@ -2607,6 +3266,7 @@ function bindEvents() {
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeNoticeImageViewer();
+      closeQiniuModal();
     }
   });
   byId("local-only-data-toggle").addEventListener("change", (event) => {
@@ -2627,6 +3287,11 @@ function bindEvents() {
   });
 
   byId("history-list").addEventListener("click", (event) => {
+    const btn = event.target.closest(".expand-btn");
+    if (!btn) return;
+    onHistoryExpandClick(btn);
+  });
+  byId("local-battle-list").addEventListener("click", (event) => {
     const btn = event.target.closest(".expand-btn");
     if (!btn) return;
     onHistoryExpandClick(btn);
@@ -2660,12 +3325,30 @@ function bindEvents() {
     renderHistoryList();
   });
 
-  byId("history-filter-apply-btn").addEventListener("click", () => {
-    state.historyFilters.mapId = byId("history-mapid-select").value || "all";
-    state.historyPage = 1;
-    loadHistoryPage(1).catch((error) => {
-      setStatus(`历史数据加载失败: ${error.message}`, false);
-    });
+  byId("local-battle-prev-btn").addEventListener("click", () => {
+    if (state.localBattlePage <= 1) return;
+    state.localBattlePage -= 1;
+    renderLocalBattleList();
+  });
+  byId("local-battle-next-btn").addEventListener("click", () => {
+    if (byId("local-battle-next-btn").disabled) return;
+    state.localBattlePage += 1;
+    renderLocalBattleList();
+  });
+  byId("local-battle-mode-select").addEventListener("change", (event) => {
+    state.localBattleFilters.mode = event.target.value || "all";
+    state.localBattlePage = 1;
+    renderLocalBattleList();
+  });
+  byId("local-battle-diff-select").addEventListener("change", (event) => {
+    state.localBattleFilters.difficulty = event.target.value || "all";
+    state.localBattlePage = 1;
+    renderLocalBattleList();
+  });
+  byId("local-battle-map-select").addEventListener("change", (event) => {
+    state.localBattleFilters.mapKey = String(event.target.value || "all").trim() || "all";
+    state.localBattlePage = 1;
+    renderLocalBattleList();
   });
 
   byId("log-window-toggle").addEventListener("change", async (event) => {
@@ -2702,6 +3385,14 @@ async function loadInitialConfig() {
 
     state.endpoints = endpoints || {};
     state.fixed = config?.data?.fixed || {};
+    state.accounts = Array.isArray(config?.data?.accounts) ? config.data.accounts : [];
+    state.activeUin = String(config?.data?.activeUin || config?.data?.uin || "").trim();
+    state.qiniuConfig =
+      config?.data?.qiniuConfig && typeof config.data.qiniuConfig === "object"
+        ? config.data.qiniuConfig
+        : {};
+    renderAccountSelect();
+    fillQiniuConfigInputs(state.qiniuConfig);
 
     const openidFromSession =
       String(config?.data?.openid || config?.data?.fixed?.openid || "").trim();

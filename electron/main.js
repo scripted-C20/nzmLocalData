@@ -8,6 +8,7 @@ const {
   buildFixedCookie,
   normalizeCookie,
   setApiLogHandler,
+  fetchUserInfo,
   fetchConfigList,
   fetchStats,
   fetchHistory,
@@ -18,18 +19,39 @@ const {
 const SESSION_FILE = "session.json";
 const ACCOUNT_BIND_FILE = "account-binding.json";
 const NOTICE_STATE_FILE = "notice-state.json";
+const QINIU_CONFIG_FILE = "qiniu-config.json";
 const LOCAL_STATS_FILE = "local-stats.json";
+const LOCAL_STATS_FILE_PREFIX = "local-stats";
+const LEGACY_LOCAL_STATS_FILE_SEPARATOR = "+";
+const LOCAL_JSON_TRANSFER_MARK = "本地导出导入";
+const LOCAL_RECORD_SOURCE = Object.freeze({
+  OFFICIAL: "official-sync",
+  JSON_TRANSFER: "json-transfer"
+});
 const NOTICE_MARKDOWN_URL = "https://gitee.com/returnee/nzm-notice/raw/master/README.md";
 const APP_ICON_PATH = path.join(__dirname, "..", "app", "bitbug_favicon.ico");
 
 let currentAccessToken = "";
 let currentOpenId = "";
+let currentUin = "";
+let currentNickname = "";
+let currentAvatar = "";
+let accountStore = { activeUin: "", accounts: [] };
 let logWindow = null;
 let logWindowVisible = false;
 let mainWindowRef = null;
 let latestNoticePayload = null;
 let latestConfigMapping = {};
 let localStatsRuntime = null;
+let qiniuConfigStore = {
+  accessKey: "",
+  secretKey: "",
+  protocol: "https",
+  domain: "",
+  path: "",
+  bucket: "",
+  updatedAt: 0
+};
 const apiLogBuffer = [];
 
 function appendApiLog(entry) {
@@ -73,8 +95,186 @@ function getNoticeStatePath() {
   return path.join(getProjectDataRoot(), NOTICE_STATE_FILE);
 }
 
-function getLocalStatsPath() {
+function getQiniuConfigPath() {
+  return path.join(getProjectDataRoot(), QINIU_CONFIG_FILE);
+}
+
+function normalizeUin(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const digits = text.replace(/[^\d]/g, "");
+  return digits || text;
+}
+
+function getLocalStatsFileNameByUin(uin = currentUin) {
+  const normalized = normalizeUin(uin);
+  if (!normalized) {
+    return LOCAL_STATS_FILE;
+  }
+  // Canonical format: local-stats{uin}.json
+  return `${LOCAL_STATS_FILE_PREFIX}${normalized}.json`;
+}
+
+function getCompatLegacyUinStatsFileName(uin = currentUin) {
+  const normalized = normalizeUin(uin);
+  if (!normalized) {
+    return LOCAL_STATS_FILE;
+  }
+  // Compatibility with old format: local-stats+{uin}.json
+  return `${LOCAL_STATS_FILE_PREFIX}${LEGACY_LOCAL_STATS_FILE_SEPARATOR}${normalized}.json`;
+}
+
+function getLocalStatsPath(uin = currentUin) {
+  return path.join(app.getPath("userData"), getLocalStatsFileNameByUin(uin));
+}
+
+function getCompatLegacyUinStatsPath(uin = currentUin) {
+  return path.join(app.getPath("userData"), getCompatLegacyUinStatsFileName(uin));
+}
+
+function getLegacyLocalStatsPath() {
   return path.join(app.getPath("userData"), LOCAL_STATS_FILE);
+}
+
+function mergeLegacyRecordList(targetRecords = [], sourceRecords = []) {
+  const list = Array.isArray(targetRecords) ? [...targetRecords] : [];
+  const seen = new Set(
+    list
+      .map((item) => String(item?.dsRoomId || "").trim())
+      .filter(Boolean)
+  );
+  if (Array.isArray(sourceRecords)) {
+    sourceRecords.forEach((item) => {
+      if (!item || typeof item !== "object") {
+        return;
+      }
+      const key = String(item?.dsRoomId || "").trim();
+      if (key && seen.has(key)) {
+        return;
+      }
+      if (key) {
+        seen.add(key);
+      }
+      list.push(item);
+    });
+  }
+  return list;
+}
+
+function deleteLegacyLocalStatsFileIfSafe() {
+  const legacyPath = getLegacyLocalStatsPath();
+  if (!fs.existsSync(legacyPath)) {
+    return false;
+  }
+  const resolvedLegacy = path.resolve(legacyPath);
+  const resolvedUserData = path.resolve(app.getPath("userData"));
+  const userDataFolderName = path.basename(resolvedUserData).toLowerCase();
+  if (path.dirname(resolvedLegacy) !== resolvedUserData) {
+    return false;
+  }
+  if (!userDataFolderName.includes("nzm-official-electron")) {
+    return false;
+  }
+  if (path.basename(resolvedLegacy).toLowerCase() !== LOCAL_STATS_FILE.toLowerCase()) {
+    return false;
+  }
+  try {
+    fs.unlinkSync(resolvedLegacy);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function safeDecode(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch (_) {
+    return raw;
+  }
+}
+
+function normalizeAccountEntry(entry = {}) {
+  const uin = normalizeUin(entry?.uin);
+  if (!uin) {
+    return null;
+  }
+  return {
+    uin,
+    openid: normalizeOpenId(entry?.openid),
+    accessToken: String(entry?.accessToken || entry?.token || "").trim(),
+    nickname: safeDecode(entry?.nickname),
+    avatar: String(entry?.avatar || "").trim(),
+    updatedAt: Number(entry?.updatedAt) || Date.now()
+  };
+}
+
+function normalizeAccountStore(raw = {}) {
+  const accountList = [];
+  const seen = new Set();
+
+  if (Array.isArray(raw?.accounts)) {
+    raw.accounts.forEach((item) => {
+      const normalized = normalizeAccountEntry(item);
+      if (!normalized || seen.has(normalized.uin)) {
+        return;
+      }
+      seen.add(normalized.uin);
+      accountList.push(normalized);
+    });
+  }
+
+  const legacy = normalizeAccountEntry({
+    uin: raw?.uin,
+    openid: raw?.openid,
+    accessToken: raw?.accessToken || raw?.token,
+    nickname: raw?.nickname,
+    avatar: raw?.avatar,
+    updatedAt: raw?.updatedAt
+  });
+  if (legacy && !seen.has(legacy.uin)) {
+    seen.add(legacy.uin);
+    accountList.push(legacy);
+  }
+
+  let activeUin = normalizeUin(raw?.activeUin);
+  if (!activeUin || !accountList.find((x) => x.uin === activeUin)) {
+    activeUin = accountList[0]?.uin || "";
+  }
+
+  return {
+    activeUin,
+    accounts: accountList.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+  };
+}
+
+function getPublicAccounts() {
+  return (accountStore?.accounts || []).map((item) => ({
+    uin: item.uin,
+    openid: item.openid,
+    nickname: item.nickname || "",
+    avatar: item.avatar || "",
+    updatedAt: item.updatedAt || 0,
+    hasAccessToken: Boolean(item.accessToken)
+  }));
+}
+
+function applyCurrentAccountByUin(uin) {
+  const target = (accountStore?.accounts || []).find((item) => item.uin === normalizeUin(uin));
+  if (!target) {
+    return false;
+  }
+  currentUin = target.uin;
+  currentOpenId = normalizeOpenId(target.openid);
+  currentAccessToken = String(target.accessToken || "").trim();
+  currentNickname = String(target.nickname || "").trim();
+  currentAvatar = String(target.avatar || "").trim();
+  accountStore.activeUin = currentUin;
+  localStatsRuntime = null;
+  ensureLocalStatsStoreFile();
+  return true;
 }
 
 function ensureDirByFile(filePath) {
@@ -210,6 +410,51 @@ function inferModeNameFromGame(game) {
   return normalizeModeName(direct);
 }
 
+function resolveRawModeNameFromGame(game, mapNode = null) {
+  const direct = String(
+    pickFirst(game, ["modeName", "sModeName", "sTypeName", "mode", "sBattleType", "sGameName"], "")
+  ).trim();
+  if (direct && direct !== "未知") {
+    return direct;
+  }
+
+  const mappedRaw = String(mapNode?.rawModeName || mapNode?.modeName || "").trim();
+  if (mappedRaw) {
+    return mappedRaw;
+  }
+
+  const inferred = inferModeNameFromGame(game);
+  return inferred && inferred !== "未知" ? inferred : "";
+}
+
+function shouldUpgradeStoredModeName(currentMode, nextMode) {
+  const currentRaw = String(currentMode || "").trim();
+  const nextRaw = String(nextMode || "").trim();
+  if (!nextRaw || nextRaw === "未知") {
+    return false;
+  }
+  if (!currentRaw || currentRaw === "未知") {
+    return true;
+  }
+  if (currentRaw === nextRaw) {
+    return false;
+  }
+  const normalizedCurrent = normalizeModeName(currentRaw);
+  const normalizedNext = normalizeModeName(nextRaw);
+  // Category mismatch means stored mode is wrong (e.g. 塔防 -> 猎场竞速), force overwrite.
+  if (normalizedCurrent !== normalizedNext && normalizedNext !== "未知") {
+    return true;
+  }
+  if (normalizedCurrent === normalizedNext && nextRaw.length > currentRaw.length) {
+    return true;
+  }
+  const genericModes = new Set(["猎场", "塔防", "时空追猎", "排位", "僵尸猎场"]);
+  if (genericModes.has(currentRaw) && !genericModes.has(nextRaw)) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeDifficultyName(text) {
   const raw = String(text || "").trim();
   if (!raw) return "未知难度";
@@ -222,6 +467,33 @@ function normalizeDifficultyName(text) {
     return "折磨I";
   }
   return raw;
+}
+
+function normalizeLocalRecordSource(value, fallback = LOCAL_RECORD_SOURCE.OFFICIAL) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return fallback;
+  }
+  const lower = raw.toLowerCase();
+  if (
+    lower === LOCAL_RECORD_SOURCE.JSON_TRANSFER ||
+    lower === "json-import" ||
+    lower === "json_import" ||
+    lower === "local-export-import" ||
+    lower === "local-json" ||
+    raw === LOCAL_JSON_TRANSFER_MARK
+  ) {
+    return LOCAL_RECORD_SOURCE.JSON_TRANSFER;
+  }
+  if (
+    lower === LOCAL_RECORD_SOURCE.OFFICIAL ||
+    lower === "official" ||
+    lower === "api" ||
+    raw === "历史战绩同步"
+  ) {
+    return LOCAL_RECORD_SOURCE.OFFICIAL;
+  }
+  return fallback;
 }
 
 function buildMapLookup(configMapping) {
@@ -290,7 +562,48 @@ function pickMapByName(mapLookup, mapName, modeHint = "") {
 
 function loadLocalStatsStore() {
   const filePath = getLocalStatsPath();
-  const raw = readJsonFile(filePath, {});
+  let raw = readJsonFile(filePath, null);
+  const normalizedUin = normalizeUin(currentUin);
+  const legacyPath = getLegacyLocalStatsPath();
+  const legacySameAsCurrent = path.resolve(legacyPath) === path.resolve(filePath);
+  let shouldDeleteLegacyFile = false;
+
+  if (!raw && normalizedUin) {
+    const compatLegacyUinPath = getCompatLegacyUinStatsPath(normalizedUin);
+    const compatLegacyUinStore = readJsonFile(compatLegacyUinPath, null);
+    if (compatLegacyUinStore && typeof compatLegacyUinStore === "object") {
+      raw = {
+        ...compatLegacyUinStore,
+        uin: normalizeUin(compatLegacyUinStore?.uin) || normalizedUin
+      };
+      writeJsonFile(filePath, raw);
+    }
+  }
+
+  if (normalizedUin && !legacySameAsCurrent) {
+    const legacyStore = readJsonFile(legacyPath, null);
+    if (legacyStore && typeof legacyStore === "object") {
+      const legacyRecords = Array.isArray(legacyStore?.records) ? legacyStore.records : [];
+      shouldDeleteLegacyFile = true;
+      if (legacyRecords.length > 0) {
+        if (!raw || typeof raw !== "object") {
+          raw = {};
+        }
+        raw.records = mergeLegacyRecordList(raw?.records, legacyRecords);
+        raw.uin = normalizeUin(raw?.uin) || normalizedUin;
+        raw.updatedAt = Date.now();
+        writeJsonFile(filePath, raw);
+      }
+    }
+  }
+
+  if (shouldDeleteLegacyFile) {
+    deleteLegacyLocalStatsFileIfSafe();
+  }
+
+  if (!raw || typeof raw !== "object") {
+    raw = {};
+  }
   const records = Array.isArray(raw?.records)
     ? raw.records
         .filter((item) => item && typeof item === "object")
@@ -300,8 +613,18 @@ function loadLocalStatsStore() {
           mapId: toPositiveInt(item.mapId) || 0,
           diffName: normalizeDifficultyName(item.diffName),
           eventTime: String(item.eventTime || "").trim(),
+          startTime: String(pickFirst(item, ["startTime", "dtGameStartTime"], "")).trim(),
+          score: toPositiveInt(pickFirst(item, ["score", "iScore"], 0)) || 0,
+          duration:
+            toPositiveInt(
+              pickFirst(item, ["duration", "iDuration", "iUseTime", "useTime", "costTime"], 0)
+            ) || 0,
           isWin: Number(item.isWin) === 1 ? 1 : 0,
-          modeName: normalizeModeName(item.modeName)
+          modeName: String(item.modeName || "").trim() || "未知",
+          sourceType: normalizeLocalRecordSource(
+            pickFirst(item, ["sourceType", "recordSource", "dataSource", "source"], ""),
+            LOCAL_RECORD_SOURCE.OFFICIAL
+          )
         }))
         .filter((item) => item.dsRoomId)
     : [];
@@ -313,7 +636,7 @@ function loadLocalStatsStore() {
           mapName: String(item.mapName || "").trim() || "未知地图",
           mapId: toPositiveInt(item.mapId) || 0,
           diffName: normalizeDifficultyName(item.diffName),
-          modeName: normalizeModeName(item.modeName),
+          modeName: String(item.modeName || "").trim() || "未知",
           batchIndex: toPositiveInt(item.batchIndex) || 1,
           count: toPositiveInt(item.count) || 0,
           winCount: toPositiveInt(item.winCount) || toPositiveInt(item.count) || 0,
@@ -330,6 +653,7 @@ function loadLocalStatsStore() {
   const importCounter = Math.max(toPositiveInt(raw?.importCounter) || 0, maxBatch);
 
   return {
+    uin: normalizeUin(raw?.uin) || normalizeUin(currentUin) || "",
     version: 3,
     updatedAt: Number(raw?.updatedAt) || 0,
     records,
@@ -341,11 +665,27 @@ function loadLocalStatsStore() {
 function saveLocalStatsStore(store) {
   const filePath = getLocalStatsPath();
   writeJsonFile(filePath, {
+    uin: normalizeUin(store?.uin) || normalizeUin(currentUin) || "",
     version: 3,
     updatedAt: Number(store?.updatedAt) || Date.now(),
     records: Array.isArray(store?.records) ? store.records : [],
     manual: Array.isArray(store?.manual) ? store.manual : [],
     importCounter: toPositiveInt(store?.importCounter) || 0
+  });
+}
+
+function ensureLocalStatsStoreFile() {
+  const filePath = getLocalStatsPath();
+  if (fs.existsSync(filePath)) {
+    return;
+  }
+  saveLocalStatsStore({
+    uin: normalizeUin(currentUin) || "",
+    version: 3,
+    updatedAt: Date.now(),
+    records: [],
+    manual: [],
+    importCounter: 0
   });
 }
 
@@ -505,6 +845,30 @@ function buildLocalMapStatsFromRuntime(configMapping = {}) {
   };
 }
 
+function buildLocalRecordListFromRuntime(runtimeInput = null) {
+  const runtime = runtimeInput && typeof runtimeInput === "object" ? runtimeInput : ensureLocalRuntime();
+  const list = Array.isArray(runtime?.store?.records) ? runtime.store.records : [];
+  return [...list]
+    .filter((item) => {
+      const roomId = String(item?.dsRoomId || "").trim();
+      // Template import should not appear in "本地战绩"; also filter legacy manual-like ids.
+      if (!roomId || roomId.startsWith("manual:")) {
+        return false;
+      }
+      return true;
+    })
+    .map((item) => ({
+      ...item,
+      roomID: String(item?.dsRoomId || "").trim(),
+      iIsWin: Number(item?.isWin) === 1 ? 1 : 0,
+      iScore: toPositiveInt(item?.score) || 0,
+      iDuration: toPositiveInt(item?.duration) || 0,
+      dtGameStartTime: String(item?.startTime || "").trim(),
+      dtEventTime: String(item?.eventTime || "").trim()
+    }))
+    .sort((a, b) => toTimestamp(b?.eventTime) - toTimestamp(a?.eventTime));
+}
+
 function normalizeLocalGameRecord(game, configMapping, prepared = null) {
   if (!game || typeof game !== "object") {
     return null;
@@ -530,9 +894,7 @@ function normalizeLocalGameRecord(game, configMapping, prepared = null) {
   ).trim();
   const mapId = toPositiveInt(mapIdRaw);
   const mapNode = mapLookup.byId.get(mapIdRaw || "");
-  const mappedMode = normalizeModeName(mapNode?.modeName || "");
-  const inferredMode = inferModeNameFromGame(game);
-  const modeName = mappedMode !== "未知" ? mappedMode : inferredMode;
+  const modeName = resolveRawModeNameFromGame(game, mapNode) || "未知";
 
   const mapName = String(
     pickFirst(
@@ -557,8 +919,19 @@ function normalizeLocalGameRecord(game, configMapping, prepared = null) {
   const eventTime = String(
     pickFirst(game, ["dtEventTime", "dtGameStartTime", "sGameTime", "time", "eventTime"], "")
   ).trim();
+  const startTime = String(
+    pickFirst(game, ["dtGameStartTime", "startTime", "gameStartTime"], "")
+  ).trim();
+  const score = toPositiveInt(pickFirst(game, ["iScore", "score"], 0)) || 0;
+  const duration =
+    toPositiveInt(pickFirst(game, ["iDuration", "iUseTime", "duration", "useTime", "costTime"], 0)) ||
+    0;
 
   const isWin = Number(pickFirst(game, ["iIsWin", "isWin"], 0)) === 1 ? 1 : 0;
+  const sourceType = normalizeLocalRecordSource(
+    pickFirst(game, ["sourceType", "recordSource", "dataSource", "source"], ""),
+    LOCAL_RECORD_SOURCE.OFFICIAL
+  );
 
   return {
     dsRoomId,
@@ -566,8 +939,12 @@ function normalizeLocalGameRecord(game, configMapping, prepared = null) {
     mapId: mapId > 0 ? mapId : 0,
     diffName: diffName || "未知难度",
     eventTime,
+    startTime,
+    score,
+    duration,
     isWin,
-    modeName
+    modeName,
+    sourceType
   };
 }
 
@@ -587,6 +964,7 @@ function mergeLocalStats(games, configMapping) {
         : {}
   };
   let inserted = 0;
+  let upgraded = 0;
   if (Array.isArray(games)) {
     games.forEach((game) => {
       const record = normalizeLocalGameRecord(game, latestConfigMapping, prepared);
@@ -595,6 +973,55 @@ function mergeLocalStats(games, configMapping) {
       }
       const key = String(record.dsRoomId);
       if (runtime.idSet.has(key)) {
+        const existing = runtime.store.records.find((x) => String(x?.dsRoomId || "") === key);
+        if (existing) {
+          let changed = false;
+          if (shouldUpgradeStoredModeName(existing.modeName, record.modeName)) {
+            existing.modeName = String(record.modeName || "").trim() || existing.modeName;
+            changed = true;
+          }
+          const nextScore = toPositiveInt(record?.score) || 0;
+          const prevScore = toPositiveInt(existing?.score) || 0;
+          if (nextScore > 0 && nextScore !== prevScore) {
+            existing.score = nextScore;
+            changed = true;
+          }
+          const nextStartTime = String(record?.startTime || "").trim();
+          const prevStartTime = String(existing?.startTime || "").trim();
+          if (nextStartTime && nextStartTime !== prevStartTime) {
+            existing.startTime = nextStartTime;
+            changed = true;
+          }
+          const nextDuration = toPositiveInt(record?.duration) || 0;
+          const prevDuration = toPositiveInt(existing?.duration) || 0;
+          if (nextDuration > 0 && nextDuration !== prevDuration) {
+            existing.duration = nextDuration;
+            changed = true;
+          }
+          if (!String(existing?.eventTime || "").trim() && String(record?.eventTime || "").trim()) {
+            existing.eventTime = String(record.eventTime || "").trim();
+            changed = true;
+          }
+          const nextSource = normalizeLocalRecordSource(
+            record?.sourceType,
+            LOCAL_RECORD_SOURCE.OFFICIAL
+          );
+          const prevSource = normalizeLocalRecordSource(
+            existing?.sourceType,
+            LOCAL_RECORD_SOURCE.OFFICIAL
+          );
+          // Keep stronger source label when importing from JSON transfer.
+          if (
+            nextSource === LOCAL_RECORD_SOURCE.JSON_TRANSFER &&
+            prevSource !== LOCAL_RECORD_SOURCE.JSON_TRANSFER
+          ) {
+            existing.sourceType = LOCAL_RECORD_SOURCE.JSON_TRANSFER;
+            changed = true;
+          }
+          if (changed) {
+            upgraded += 1;
+          }
+        }
         return;
       }
       runtime.idSet.add(key);
@@ -648,7 +1075,7 @@ function mergeLocalStats(games, configMapping) {
     });
   }
 
-  if (inserted > 0) {
+  if (inserted > 0 || upgraded > 0) {
     runtime.store.records.sort((a, b) => toTimestamp(b.eventTime) - toTimestamp(a.eventTime));
     runtime.store.updatedAt = Date.now();
     saveLocalStatsStore(runtime.store);
@@ -656,8 +1083,10 @@ function mergeLocalStats(games, configMapping) {
 
   return {
     inserted,
+    upgraded,
     totalRecords: runtime.store.records.length,
     localMapStats: buildLocalMapStatsFromRuntime(latestConfigMapping),
+    localRecords: buildLocalRecordListFromRuntime(runtime),
     localStatsPath: getLocalStatsPath()
   };
 }
@@ -715,7 +1144,14 @@ function remapStoredModeByConfig(configMapping) {
 
 function clearLocalStats() {
   localStatsRuntime = {
-    store: { version: 3, updatedAt: Date.now(), records: [], manual: [], importCounter: 0 },
+    store: {
+      uin: normalizeUin(currentUin) || "",
+      version: 3,
+      updatedAt: Date.now(),
+      records: [],
+      manual: [],
+      importCounter: 0
+    },
     idSet: new Set(),
     aggMap: new Map()
   };
@@ -725,6 +1161,7 @@ function clearLocalStats() {
     data: {
       localMapStats: buildLocalMapStatsFromRuntime(latestConfigMapping),
       localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
         inserted: 0,
         totalRecords: 0,
         path: getLocalStatsPath()
@@ -746,6 +1183,7 @@ function clearImportedStats() {
     data: {
       localMapStats,
       localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
         totalRecords: Number(localMapStats?.totalRecords) || 0,
         manualRows: Number(localMapStats?.manualRows) || 0,
         path: getLocalStatsPath()
@@ -802,6 +1240,7 @@ function clearImportedStatsByMap(payload = {}) {
       removed,
       localMapStats,
       localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
         totalRecords: Number(localMapStats?.totalRecords) || 0,
         manualRows: Number(localMapStats?.manualRows) || 0,
         path: getLocalStatsPath()
@@ -834,8 +1273,42 @@ function readXlsxRows(filePath) {
   return xlsx.utils.sheet_to_json(sheet, { defval: "" });
 }
 
-function buildTemplateRowsFromConfig(configMapping = {}) {
+function readRowUin(row = {}) {
+  const raw = String(
+    pickFirst(row, ["uin", "UIN", "账号UIN", "账号uin", "账号", "用户UIN"], "")
+  ).trim();
+  return normalizeUin(raw.replace(/^'+/, ""));
+}
+
+function formatUinForSheet(uin) {
+  const normalized = normalizeUin(uin);
+  if (!normalized) {
+    return "";
+  }
+  // Prefix apostrophe to keep long numeric uin as text in Excel.
+  return `'${normalized}`;
+}
+
+function ensureRowsUinMatch(rows = [], expectedUin = "") {
+  const target = normalizeUin(expectedUin);
+  if (!target) {
+    return;
+  }
+  const uinList = (Array.isArray(rows) ? rows : [])
+    .map((row) => readRowUin(row))
+    .filter(Boolean);
+  if (!uinList.length) {
+    throw new Error("导入文件缺少 uin 字段");
+  }
+  const invalid = uinList.find((uin) => uin !== target);
+  if (invalid) {
+    throw new Error(`导入文件 uin(${invalid}) 与当前账号(${target})不一致`);
+  }
+}
+
+function buildTemplateRowsFromConfig(configMapping = {}, options = {}) {
   const root = getConfigRoot(configMapping);
+  const expectedUin = normalizeUin(options?.uin || currentUin);
   const mapInfo =
     root?.mapInfo && typeof root.mapInfo === "object" ? root.mapInfo : {};
   const difficultyInfo =
@@ -888,6 +1361,7 @@ function buildTemplateRowsFromConfig(configMapping = {}) {
     maps.forEach((mapItem) => {
       difficulties.forEach((diffName) => {
         rows.push({
+          uin: formatUinForSheet(expectedUin),
           地图名称: mapItem.mapName,
           模式: mapItem.modeName,
           通关难度: diffName,
@@ -904,12 +1378,30 @@ function buildTemplateRowsFromConfig(configMapping = {}) {
   };
 }
 
-function createXlsxTemplate(filePath, configMapping = {}) {
+function buildLocalCountLookupFromRuntime(runtimeInput = null) {
+  const runtime = runtimeInput && typeof runtimeInput === "object" ? runtimeInput : ensureLocalRuntime();
+  const lookup = new Map();
+  [...(runtime?.aggMap?.values?.() || [])].forEach((item) => {
+    const mapName = String(item?.mapName || "").trim();
+    const modeName = normalizeModeName(item?.modeName);
+    if (!mapName || !modeName) return;
+    const diffMap = item?.diffMap instanceof Map ? item.diffMap : new Map();
+    [...diffMap.values()].forEach((diff) => {
+      const diffName = normalizeDifficultyName(diff?.diffName);
+      const total = toPositiveInt(diff?.total) || 0;
+      const key = `${mapName}|${modeName}|${diffName}`;
+      lookup.set(key, total);
+    });
+  });
+  return lookup;
+}
+
+function createXlsxTemplate(filePath, configMapping = {}, options = {}) {
   const xlsx = getXlsxModule();
-  const template = buildTemplateRowsFromConfig(configMapping);
+  const template = buildTemplateRowsFromConfig(configMapping, options);
   const rows = template.rows;
   const sheet = xlsx.utils.json_to_sheet(rows, {
-    header: ["地图名称", "模式", "通关难度", "场数"]
+    header: ["uin", "地图名称", "模式", "通关难度", "场数"]
   });
   const workbook = xlsx.utils.book_new();
   xlsx.utils.book_append_sheet(workbook, sheet, "导入模板");
@@ -921,7 +1413,49 @@ function createXlsxTemplate(filePath, configMapping = {}) {
   };
 }
 
+function createXlsxExportFromTemplate(filePath, configMapping = {}, runtimeInput = null, uin = "") {
+  const xlsx = getXlsxModule();
+  const exportUin = normalizeUin(uin || currentUin);
+  const template = buildTemplateRowsFromConfig(configMapping, { uin: exportUin });
+  const countLookup = buildLocalCountLookupFromRuntime(runtimeInput);
+  let rows = template.rows.map((row) => {
+    const mapName = String(row?.地图名称 || "").trim();
+    const modeName = normalizeModeName(String(row?.模式 || "").trim());
+    const diffName = normalizeDifficultyName(String(row?.通关难度 || "").trim());
+    const key = `${mapName}|${modeName}|${diffName}`;
+    return {
+      ...row,
+      uin: formatUinForSheet(exportUin),
+      场数: countLookup.get(key) || 0
+    };
+  });
+  if (!rows.length) {
+    rows = [...countLookup.entries()].map(([key, total]) => {
+      const [mapName, modeName, diffName] = key.split("|");
+      return {
+        uin: formatUinForSheet(exportUin),
+        地图名称: mapName || "未知地图",
+        模式: modeName || "未知",
+        通关难度: diffName || "未知难度",
+        场数: total || 0
+      };
+    });
+  }
+  const sheet = xlsx.utils.json_to_sheet(rows, {
+    header: ["uin", "地图名称", "模式", "通关难度", "场数"]
+  });
+  const workbook = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(workbook, sheet, "本地统计导出");
+  xlsx.writeFile(workbook, filePath);
+  return {
+    rowCount: rows.length,
+    mapCount: template.mapCount,
+    difficultyCount: template.difficultyCount
+  };
+}
+
 function importLocalStatsFromRows(rows, sourceFile) {
+  ensureRowsUinMatch(rows, currentUin);
   const runtime = ensureLocalRuntime();
   const mapLookup = buildMapLookup(latestConfigMapping);
   const now = Date.now();
@@ -1046,6 +1580,113 @@ function importLocalStatsFromRows(rows, sourceFile) {
   };
 }
 
+function normalizeImportedJsonRecord(item = {}) {
+  const record = item && typeof item === "object" ? item : {};
+  const dsRoomId = String(
+    pickFirst(record, ["dsRoomId", "DsRoomId", "roomID", "roomId", "sRoomID"], "")
+  ).trim();
+  if (!dsRoomId) {
+    return null;
+  }
+  return {
+    dsRoomId,
+    mapName: String(pickFirst(record, ["mapName", "sMapName", "地图名称"], "未知地图")).trim() || "未知地图",
+    mapId: toPositiveInt(pickFirst(record, ["mapId", "iMapId", "地图ID"], 0)) || 0,
+    modeName: String(pickFirst(record, ["modeName", "mode", "模式"], "未知")).trim() || "未知",
+    diffName: normalizeDifficultyName(
+      pickFirst(record, ["diffName", "difficultyName", "通关难度"], "未知难度")
+    ),
+    eventTime: String(pickFirst(record, ["eventTime", "dtEventTime", "结束时间"], "")).trim(),
+    startTime: String(pickFirst(record, ["startTime", "dtGameStartTime", "开始时间"], "")).trim(),
+    score: toPositiveInt(pickFirst(record, ["score", "iScore", "伤害"], 0)) || 0,
+    duration: toPositiveInt(
+      pickFirst(record, ["duration", "iDuration", "本局时长"], 0)
+    ) || 0,
+    isWin: Number(pickFirst(record, ["isWin", "iIsWin", "是否胜利"], 0)) === 1 ? 1 : 0,
+    sourceType: normalizeLocalRecordSource(
+      pickFirst(record, ["sourceType", "recordSource", "dataSource", "source"], ""),
+      LOCAL_RECORD_SOURCE.JSON_TRANSFER
+    )
+  };
+}
+
+function importLocalStatsFromJsonPayload(payload = {}) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const payloadMarker = String(
+    pickFirst(data, ["transferMarker", "transferType", "marker"], "")
+  ).trim();
+  const isLocalTransferPayload =
+    payloadMarker === LOCAL_JSON_TRANSFER_MARK ||
+    payloadMarker.toLowerCase() === "local-export-import";
+  const payloadUin = normalizeUin(pickFirst(data, ["uin", "UIN"], ""));
+  const targetUin = normalizeUin(currentUin);
+  if (!targetUin) {
+    throw new Error("当前账号缺少 uin，无法导入 JSON");
+  }
+  if (!payloadUin) {
+    throw new Error("JSON 文件缺少 uin 字段");
+  }
+  if (payloadUin !== targetUin) {
+    throw new Error(`JSON 文件 uin(${payloadUin}) 与当前账号(${targetUin})不一致`);
+  }
+  const recordList = Array.isArray(data?.records)
+    ? data.records
+    : Array.isArray(data?.list)
+      ? data.list
+      : Array.isArray(payload)
+        ? payload
+        : [];
+  const gameList = recordList
+    .map((item) => normalizeImportedJsonRecord(item))
+    .filter(Boolean)
+    .map((item) => ({
+      DsRoomId: item.dsRoomId,
+      mapName: item.mapName,
+      iMapId: item.mapId,
+      modeName: item.modeName,
+      diffName: item.diffName,
+      dtEventTime: item.eventTime,
+      dtGameStartTime: item.startTime,
+      iScore: item.score,
+      iDuration: item.duration,
+      iIsWin: item.isWin,
+      recordSource: isLocalTransferPayload
+        ? LOCAL_RECORD_SOURCE.JSON_TRANSFER
+        : item.sourceType
+    }));
+  const merged = mergeLocalStats(gameList, latestConfigMapping);
+  return {
+    inserted: merged.inserted,
+    upgraded: merged.upgraded,
+    totalRecords: merged.totalRecords,
+    localMapStats: merged.localMapStats,
+    localRecords: merged.localRecords
+  };
+}
+
+function exportLocalRecordsToJson(filePath) {
+  const runtime = ensureLocalRuntime();
+  const records = Array.isArray(runtime?.store?.records)
+    ? runtime.store.records.map((item) => ({
+        ...item,
+        sourceType: normalizeLocalRecordSource(
+          item?.sourceType,
+          LOCAL_RECORD_SOURCE.OFFICIAL
+        )
+      }))
+    : [];
+  const payload = {
+    transferMarker: LOCAL_JSON_TRANSFER_MARK,
+    transferType: "local-export-import",
+    uin: normalizeUin(currentUin) || "",
+    exportedAt: Date.now(),
+    count: records.length,
+    records
+  };
+  writeJsonFile(filePath, payload);
+  return payload;
+}
+
 function extractTokenFromCookie(cookie) {
   const match = String(cookie || "").match(/(?:^|;\s*)access_token=([^;]+)/i);
   return match?.[1]?.trim() || "";
@@ -1060,10 +1701,284 @@ function normalizeOpenId(value) {
   return String(value ?? "").trim();
 }
 
-function buildAccountPayload() {
+function normalizeDomain(value) {
+  const text = String(value || "").trim().replace(/\/+$/, "");
+  if (!text) {
+    return "";
+  }
+  return text.replace(/^https?:\/\//i, "");
+}
+
+function normalizeCloudPath(value) {
+  const text = String(value || "").trim().replace(/\\/g, "/");
+  return text.replace(/^\/+|\/+$/g, "");
+}
+
+function normalizeQiniuConfig(input = {}) {
+  const protocolRaw = String(input?.protocol || input?.scheme || "https")
+    .trim()
+    .toLowerCase();
+  const protocol = protocolRaw === "http" ? "http" : "https";
   return {
-    openid: normalizeOpenId(currentOpenId),
-    accessToken: String(currentAccessToken || "").trim(),
+    accessKey: String(input?.accessKey || "").trim(),
+    secretKey: String(input?.secretKey || "").trim(),
+    protocol,
+    domain: normalizeDomain(input?.domain),
+    path: normalizeCloudPath(input?.path),
+    bucket: String(input?.bucket || input?.bucketName || "").trim(),
+    updatedAt: Number(input?.updatedAt) || Date.now()
+  };
+}
+
+function getPublicQiniuConfig() {
+  return {
+    accessKey: String(qiniuConfigStore?.accessKey || "").trim(),
+    secretKey: String(qiniuConfigStore?.secretKey || "").trim(),
+    protocol: String(qiniuConfigStore?.protocol || "https").trim() || "https",
+    domain: String(qiniuConfigStore?.domain || "").trim(),
+    path: String(qiniuConfigStore?.path || "").trim(),
+    bucket: String(qiniuConfigStore?.bucket || "").trim(),
+    updatedAt: Number(qiniuConfigStore?.updatedAt) || 0
+  };
+}
+
+function loadPersistedQiniuConfig() {
+  const file = getQiniuConfigPath();
+  const raw = readJsonFile(file, null);
+  if (!raw || typeof raw !== "object") {
+    qiniuConfigStore = normalizeQiniuConfig({});
+    writeJsonFile(file, qiniuConfigStore);
+    return;
+  }
+  qiniuConfigStore = normalizeQiniuConfig(raw);
+}
+
+function persistQiniuConfig() {
+  const file = getQiniuConfigPath();
+  qiniuConfigStore = normalizeQiniuConfig({
+    ...qiniuConfigStore,
+    updatedAt: Date.now()
+  });
+  writeJsonFile(file, qiniuConfigStore);
+}
+
+function getQiniuSdk() {
+  try {
+    return require("qiniu");
+  } catch (_) {
+    throw new Error("未安装 qiniu 依赖，请先安装后再使用云同步");
+  }
+}
+
+function buildQiniuFileUrl(protocol, domain, key, withTs = false) {
+  const safeProtocol = String(protocol || "https").toLowerCase() === "http" ? "http" : "https";
+  const rawDomain = normalizeDomain(domain);
+  const base = `${safeProtocol}://${rawDomain}`;
+  const encodedKey = String(key || "")
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  const ts = Date.now();
+  const suffix = withTs ? `?e=${ts}` : "";
+  return `${base}/${encodedKey}${suffix}`;
+}
+
+function buildQiniuPrivateDownloadUrl(config, key, expireEpoch) {
+  const safeExpire = Number(expireEpoch) > 0 ? Number(expireEpoch) : Math.floor(Date.now() / 1000) + 300;
+  const qiniu = getQiniuSdk();
+  const mac = new qiniu.auth.digest.Mac(config.accessKey, config.secretKey);
+  const publicUrl = buildQiniuFileUrl(config.protocol, config.domain, key, false);
+  if (qiniu?.util && typeof qiniu.util.privateDownloadUrl === "function") {
+    return qiniu.util.privateDownloadUrl(publicUrl, safeExpire, mac);
+  }
+  const separator = publicUrl.includes("?") ? "&" : "?";
+  const downloadUrl = `${publicUrl}${separator}e=${safeExpire}`;
+  const digest = crypto
+    .createHmac("sha1", config.secretKey)
+    .update(downloadUrl)
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return `${downloadUrl}&token=${config.accessKey}:${digest}`;
+}
+
+function buildCloudStatsObject(configInput = {}) {
+  const config = normalizeQiniuConfig(configInput);
+  if (!config.accessKey || !config.secretKey || !config.domain || !config.bucket) {
+    throw new Error("请先完整填写七牛云配置（AccessKey/SecretKey/域名/存储空间名称）");
+  }
+
+  ensureLocalStatsStoreFile();
+  const localPath = getLocalStatsPath();
+  if (!fs.existsSync(localPath)) {
+    throw new Error("本地统计文件不存在");
+  }
+
+  const currentStats = readJsonFile(localPath, null);
+  if (!currentStats || typeof currentStats !== "object") {
+    throw new Error("本地统计文件读取失败");
+  }
+
+  const uin = normalizeUin(currentUin) || normalizeUin(currentStats?.uin) || "unknown";
+  const fileName = `local-stats${uin}-cloud.json`;
+  const key = config.path ? `${config.path}/${fileName}` : fileName;
+  const records = Array.isArray(currentStats?.records)
+    ? currentStats.records.map((item) => ({
+        ...item,
+        sourceType: normalizeLocalRecordSource(
+          item?.sourceType,
+          LOCAL_RECORD_SOURCE.OFFICIAL
+        )
+      }))
+    : [];
+  const now = Date.now();
+  const cloudPayload = {
+    ...currentStats,
+    uin,
+    transferMarker: LOCAL_JSON_TRANSFER_MARK,
+    transferType: "cloud",
+    sourceType: LOCAL_RECORD_SOURCE.JSON_TRANSFER,
+    exportedAt: now,
+    cloudSyncedAt: now,
+    count: records.length,
+    records
+  };
+  return {
+    config,
+    uin,
+    fileName,
+    key,
+    localPath,
+    cloudPayload
+  };
+}
+
+function createQiniuUploadToken(config, key) {
+  const qiniu = getQiniuSdk();
+  const mac = new qiniu.auth.digest.Mac(config.accessKey, config.secretKey);
+  const putPolicy = new qiniu.rs.PutPolicy({
+    scope: `${config.bucket}:${key}`,
+    insertOnly: 0
+  });
+  return putPolicy.uploadToken(mac);
+}
+
+function testQiniuConnectivityNoUpload(configInput = {}) {
+  const prepared = buildCloudStatsObject(configInput);
+  const uploadToken = createQiniuUploadToken(prepared.config, prepared.key);
+  if (!uploadToken || typeof uploadToken !== "string") {
+    throw new Error("上传 token 生成失败");
+  }
+  const downloadExpire = Math.floor(Date.now() / 1000) + 300;
+  const privateUrl = buildQiniuPrivateDownloadUrl(prepared.config, prepared.key, downloadExpire);
+  return {
+    bucket: prepared.config.bucket,
+    key: prepared.key,
+    fileName: prepared.fileName,
+    url: privateUrl,
+    expireAt: downloadExpire,
+    tokenGenerated: true
+  };
+}
+
+async function syncLocalStatsToQiniu() {
+  const prepared = buildCloudStatsObject(qiniuConfigStore);
+  const config = prepared.config;
+  const key = prepared.key;
+  const fileName = prepared.fileName;
+  const body = JSON.stringify(prepared.cloudPayload, null, 2);
+  const qiniu = getQiniuSdk();
+  const uploadToken = createQiniuUploadToken(config, key);
+  const qnConfig = new qiniu.conf.Config();
+  const formUploader = new qiniu.form_up.FormUploader(qnConfig);
+  const putExtra = new qiniu.form_up.PutExtra();
+
+  const uploaded = await new Promise((resolve, reject) => {
+    formUploader.put(uploadToken, key, body, putExtra, (respErr, respBody, respInfo) => {
+      if (respErr) {
+        reject(respErr);
+        return;
+      }
+      const statusCode = Number(respInfo?.statusCode) || 0;
+      if (statusCode !== 200) {
+        reject(new Error(respBody?.error || `七牛云上传失败: HTTP ${statusCode || "unknown"}`));
+        return;
+      }
+      resolve(respBody || {});
+    });
+  });
+  const expireAt = Math.floor(Date.now() / 1000) + 300;
+  const privateUrl = buildQiniuPrivateDownloadUrl(config, key, expireAt);
+
+  return {
+    key,
+    fileName,
+    bucket: config.bucket,
+    url: privateUrl,
+    expireAt,
+    uploadScope: `${config.bucket}:${key}`,
+    overwrite: true,
+    response: uploaded
+  };
+}
+
+async function pullLocalStatsFromQiniu() {
+  const prepared = buildCloudStatsObject(qiniuConfigStore);
+  const expireAt = Math.floor(Date.now() / 1000) + 300;
+  const url = buildQiniuPrivateDownloadUrl(prepared.config, prepared.key, expireAt);
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json"
+    }
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new Error(`云拉取失败: HTTP ${response.status}`);
+  }
+  let payload = null;
+  try {
+    payload = JSON.parse(bodyText || "{}");
+  } catch (_) {
+    throw new Error("云端文件不是有效 JSON");
+  }
+
+  const imported = importLocalStatsFromJsonPayload(payload);
+  return {
+    key: prepared.key,
+    fileName: prepared.fileName,
+    url,
+    inserted: imported.inserted,
+    upgraded: imported.upgraded,
+    totalRecords: imported.totalRecords,
+    localMapStats: imported.localMapStats,
+    localRecords: imported.localRecords
+  };
+}
+
+function buildAccountPayload() {
+  const active = (accountStore?.accounts || []).find((item) => item.uin === currentUin);
+  const activeOpenid = normalizeOpenId(active?.openid) || normalizeOpenId(currentOpenId);
+  const activeToken = String(active?.accessToken || currentAccessToken || "").trim();
+  const activeNickname = String(active?.nickname || currentNickname || "").trim();
+  const activeAvatar = String(active?.avatar || currentAvatar || "").trim();
+  return {
+    activeUin: normalizeUin(currentUin) || "",
+    uin: normalizeUin(currentUin) || "",
+    openid: activeOpenid,
+    accessToken: activeToken,
+    nickname: activeNickname,
+    avatar: activeAvatar,
+    accounts: Array.isArray(accountStore?.accounts)
+      ? accountStore.accounts.map((item) => ({
+          uin: normalizeUin(item.uin),
+          openid: normalizeOpenId(item.openid),
+          accessToken: String(item.accessToken || "").trim(),
+          nickname: String(item.nickname || "").trim(),
+          avatar: String(item.avatar || "").trim(),
+          updatedAt: Number(item.updatedAt) || Date.now()
+        }))
+      : [],
     updatedAt: Date.now()
   };
 }
@@ -1079,21 +1994,121 @@ function loadPersistedAccount() {
   try {
     const text = fs.readFileSync(file, "utf8");
     const json = JSON.parse(text);
-    currentOpenId =
-      normalizeOpenId(json?.openid) ||
-      normalizeOpenId(currentOpenId) ||
-      "";
-    currentAccessToken = String(
-      json?.accessToken || json?.token || currentAccessToken || ""
-    ).trim();
+    accountStore = normalizeAccountStore(json || {});
+    if (!applyCurrentAccountByUin(accountStore.activeUin)) {
+      currentUin = normalizeUin(json?.uin) || "";
+      currentOpenId = normalizeOpenId(json?.openid) || "";
+      currentAccessToken = String(json?.accessToken || json?.token || "").trim();
+      currentNickname = safeDecode(json?.nickname);
+      currentAvatar = String(json?.avatar || "").trim();
+      if (currentUin) {
+        ensureLocalStatsStoreFile();
+      }
+      if (!currentUin && !currentOpenId && !currentAccessToken) {
+        currentUin = "";
+        currentOpenId = "";
+        currentAccessToken = "";
+        currentNickname = "";
+        currentAvatar = "";
+      }
+    }
   } catch (error) {
     console.error("Failed to load account binding:", error);
+    accountStore = { activeUin: "", accounts: [] };
+    currentUin = "";
+    currentOpenId = "";
+    currentAccessToken = "";
+    currentNickname = "";
+    currentAvatar = "";
     writeJsonFile(file, buildAccountPayload());
   }
 }
 
 function persistAccount() {
   writeJsonFile(getAccountBindPath(), buildAccountPayload());
+}
+
+function extractUserProfileFromUserInfo(data) {
+  const payload =
+    data?.data && typeof data.data === "object"
+      ? data.data
+      : data && typeof data === "object"
+        ? data
+        : {};
+  return {
+    uin: normalizeUin(pickFirst(payload, ["uin", "uid", "qqUin"], "")),
+    nickname: safeDecode(pickFirst(payload, ["nickname", "name", "nickName"], "")),
+    avatar: String(pickFirst(payload, ["avatar", "avatarUrl", "headUrl"], "")).trim()
+  };
+}
+
+function extractUserProfileFromGameDetail(detailData) {
+  const payload =
+    detailData?.data && typeof detailData.data === "object"
+      ? detailData.data
+      : detailData && typeof detailData === "object"
+        ? detailData
+        : {};
+  const loginUserDetail =
+    payload?.loginUserDetail && typeof payload.loginUserDetail === "object"
+      ? payload.loginUserDetail
+      : {};
+  return {
+    nickname: safeDecode(pickFirst(loginUserDetail, ["nickname", "name", "nickName"], "")),
+    avatar: safeDecode(pickFirst(loginUserDetail, ["avatar", "avatarUrl", "headUrl"], ""))
+  };
+}
+
+async function resolveProfileFromLatestGameDetail(cookie) {
+  const historyResult = await fetchHistory(cookie, { page: 1, limit: 1 });
+  const firstGame = Array.isArray(historyResult?.data?.list) ? historyResult.data.list[0] : null;
+  if (!firstGame || typeof firstGame !== "object") {
+    return {};
+  }
+  const roomId = String(
+    pickFirst(firstGame, [
+      "roomID",
+      "DsRoomId",
+      "dsRoomId",
+      "sRoomID",
+      "roomId",
+      "roomid",
+      "id"
+    ])
+  ).trim();
+  if (!roomId) {
+    return {};
+  }
+  const detailResult = await fetchDetail(cookie, roomId);
+  return extractUserProfileFromGameDetail(detailResult);
+}
+
+function upsertBoundAccount(accountData = {}) {
+  const normalized = normalizeAccountEntry(accountData);
+  if (!normalized) {
+    throw new Error("uin is required");
+  }
+  const currentList = Array.isArray(accountStore?.accounts) ? [...accountStore.accounts] : [];
+  const index = currentList.findIndex((item) => item.uin === normalized.uin);
+  if (index >= 0) {
+    currentList[index] = {
+      ...currentList[index],
+      ...normalized,
+      updatedAt: Date.now()
+    };
+  } else {
+    currentList.push({
+      ...normalized,
+      updatedAt: Date.now()
+    });
+  }
+  accountStore = normalizeAccountStore({
+    activeUin: normalized.uin,
+    accounts: currentList
+  });
+  applyCurrentAccountByUin(normalized.uin);
+  persistAccount();
+  return normalized.uin;
 }
 
 function loadPersistedSession() {
@@ -1346,6 +2361,108 @@ function requireCookie() {
   });
 }
 
+function syncLocalRecordsFromStatsData(statsData = {}) {
+  if (!statsData || typeof statsData !== "object") {
+    return { success: false, message: "同步失败：缺少统计数据" };
+  }
+  if (statsData.configMapping && typeof statsData.configMapping === "object") {
+    latestConfigMapping = statsData.configMapping;
+  }
+
+  const merged = mergeLocalStats(
+    Array.isArray(statsData.gameList) ? statsData.gameList : [],
+    latestConfigMapping
+  );
+  return {
+    success: true,
+    message: `本地战绩已更新：新增 ${merged.inserted}，更新 ${merged.upgraded}`,
+    data: {
+      localMapStats: merged.localMapStats,
+      localRecords: Array.isArray(merged.localRecords) ? merged.localRecords : [],
+      localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
+        inserted: merged.inserted,
+        updated: merged.upgraded,
+        totalRecords: merged.totalRecords,
+        path: merged.localStatsPath
+      }
+    }
+  };
+}
+
+async function syncLocalRecordsByDsRoomId() {
+  const result = await fetchStats(requireCookie());
+  if (!result?.success || !result?.data) {
+    return { success: false, message: result?.message || "同步失败" };
+  }
+  return syncLocalRecordsFromStatsData(result.data);
+}
+
+async function resetAllLocalStatsFromHistory() {
+  const limit = 10;
+  const maxPages = 200;
+  let page = 1;
+  let hasMore = true;
+  let fetchedPages = 0;
+  let sourceCount = 0;
+  const allGames = [];
+  let configMapping = {};
+
+  while (hasMore && page <= maxPages) {
+    const result = await fetchHistory(requireCookie(), { page, limit });
+    if (!result?.success) {
+      throw new Error(result?.message || `历史战绩第 ${page} 页获取失败`);
+    }
+
+    fetchedPages += 1;
+    const data = result?.data || {};
+    if (data?.configMapping && typeof data.configMapping === "object") {
+      configMapping = data.configMapping;
+    }
+
+    const list = Array.isArray(data?.list) ? data.list : [];
+    sourceCount += list.length;
+    if (list.length) {
+      allGames.push(...list);
+    }
+
+    const totalPages = Number(data?.totalPages) || 0;
+    if (totalPages > 0) {
+      hasMore = page < totalPages;
+    } else {
+      hasMore = Boolean(data?.hasMore) && list.length >= limit;
+    }
+    page += 1;
+  }
+
+  clearLocalStats();
+  if (configMapping && typeof configMapping === "object") {
+    latestConfigMapping = configMapping;
+  }
+
+  const merged = mergeLocalStats(allGames, latestConfigMapping);
+  return {
+    success: true,
+    message:
+      merged.totalRecords > 0
+        ? `已清空并重建本地数据：${merged.totalRecords} 场（历史 ${sourceCount} 条）`
+        : "已清空本地数据：历史战绩暂无可同步记录",
+    data: {
+      fetchedPages,
+      sourceCount,
+      localMapStats: merged.localMapStats,
+      localRecords: Array.isArray(merged.localRecords) ? merged.localRecords : [],
+      localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
+        inserted: merged.inserted,
+        updated: merged.upgraded,
+        totalRecords: merged.totalRecords,
+        path: merged.localStatsPath
+      }
+    }
+  };
+}
+
 ipcMain.handle("official:get-endpoints", () => OFFICIAL_ENDPOINTS);
 
 ipcMain.handle("api-log:get-buffer", () => ({
@@ -1372,11 +2489,18 @@ ipcMain.handle("session:get-config", () => ({
       ...FIXED_COOKIE_FIELDS,
       openid: currentOpenId
     },
+    uin: normalizeUin(currentUin) || "",
+    nickname: String(currentNickname || "").trim(),
+    avatar: String(currentAvatar || "").trim(),
     openid: currentOpenId,
     accessToken: currentAccessToken,
+    accounts: getPublicAccounts(),
+    activeUin: normalizeUin(accountStore?.activeUin) || normalizeUin(currentUin) || "",
     hasAccessToken: Boolean(currentAccessToken),
     logWindowVisible,
-    accountBindPath: getAccountBindPath()
+    qiniuConfig: getPublicQiniuConfig(),
+    accountBindPath: getAccountBindPath(),
+    localStatsPath: getLocalStatsPath()
   }
 }));
 
@@ -1386,6 +2510,76 @@ ipcMain.handle("session:set-log-window-visible", (_, visible) => {
     success: true,
     data: {
       logWindowVisible
+    }
+  };
+});
+
+ipcMain.handle("qiniu:get-config", () => ({
+  success: true,
+  data: getPublicQiniuConfig()
+}));
+
+ipcMain.handle("qiniu:save-config", (_, payload) => {
+  qiniuConfigStore = normalizeQiniuConfig(payload || {});
+  persistQiniuConfig();
+  try {
+    const testResult = testQiniuConnectivityNoUpload(qiniuConfigStore);
+    return {
+      success: true,
+      message: "七牛云配置已保存，连通性校验通过（未上传）",
+      data: {
+        config: getPublicQiniuConfig(),
+        test: testResult
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: `七牛云配置已保存，但连通性校验失败: ${error?.message || "未知错误"}`,
+      data: {
+        config: getPublicQiniuConfig()
+      }
+    };
+  }
+});
+
+ipcMain.handle("qiniu:test-config", (_, payload) => {
+  try {
+    const normalized = normalizeQiniuConfig(payload || qiniuConfigStore);
+    const testResult = testQiniuConnectivityNoUpload(normalized);
+    return {
+      success: true,
+      message: "连通性校验通过（未上传）",
+      data: testResult
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error?.message || "连通性校验失败"
+    };
+  }
+});
+
+ipcMain.handle("session:switch-account", (_, uin) => {
+  const targetUin = normalizeUin(uin);
+  if (!targetUin) {
+    return { success: false, message: "uin is required" };
+  }
+  const switched = applyCurrentAccountByUin(targetUin);
+  if (!switched) {
+    return { success: false, message: `uin ${targetUin} not found` };
+  }
+  persistAccount();
+  return {
+    success: true,
+    data: {
+      uin: currentUin,
+      nickname: currentNickname,
+      avatar: currentAvatar,
+      openid: currentOpenId,
+      accessToken: currentAccessToken,
+      accounts: getPublicAccounts(),
+      localStatsPath: getLocalStatsPath()
     }
   };
 });
@@ -1402,12 +2596,15 @@ ipcMain.handle("notice:check", async () => {
 });
 
 ipcMain.handle("local:get-stats", () => {
+  const runtime = ensureLocalRuntime();
   const localMapStats = buildLocalMapStatsFromRuntime(latestConfigMapping);
   return {
     success: true,
     data: {
       localMapStats,
+      localRecords: buildLocalRecordListFromRuntime(runtime),
       localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
         totalRecords: Number(localMapStats?.totalRecords) || 0,
         manualRows: Number(localMapStats?.manualRows) || 0,
         path: getLocalStatsPath()
@@ -1416,8 +2613,68 @@ ipcMain.handle("local:get-stats", () => {
   };
 });
 
+ipcMain.handle("local:refresh-by-roomid", async () => {
+  return syncLocalRecordsByDsRoomId();
+});
+
+ipcMain.handle("local:cloud-sync", async () => {
+  try {
+    const uploaded = await syncLocalStatsToQiniu();
+    return {
+      success: true,
+      message: `云同步成功：${uploaded.key}`,
+      data: uploaded
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error?.message || "云同步失败"
+    };
+  }
+});
+
+ipcMain.handle("local:cloud-pull", async () => {
+  try {
+    const pulled = await pullLocalStatsFromQiniu();
+    return {
+      success: true,
+      message: `云拉取完成：新增 ${pulled.inserted}，更新 ${pulled.upgraded}`,
+      data: {
+        key: pulled.key,
+        fileName: pulled.fileName,
+        url: pulled.url,
+        localMapStats: pulled.localMapStats,
+        localRecords: Array.isArray(pulled.localRecords) ? pulled.localRecords : [],
+        localStatsMeta: {
+          uin: normalizeUin(currentUin) || "",
+          inserted: pulled.inserted,
+          updated: pulled.upgraded,
+          totalRecords: pulled.totalRecords,
+          path: getLocalStatsPath()
+        }
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error?.message || "云拉取失败"
+    };
+  }
+});
+
 ipcMain.handle("local:clear-stats", () => {
   return clearImportedStats();
+});
+
+ipcMain.handle("local:reset-all-from-history", async () => {
+  try {
+    return await resetAllLocalStatsFromHistory();
+  } catch (error) {
+    return {
+      success: false,
+      message: error?.message || "清空并重建失败"
+    };
+  }
 });
 
 ipcMain.handle("local:clear-imported-map", (_, payload) => {
@@ -1449,6 +2706,7 @@ ipcMain.handle("local:import-xlsx", async () => {
     data: {
       localMapStats: imported.localMapStats,
       localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
         totalRecords: Number(imported?.localMapStats?.totalRecords) || 0,
         manualRows: Number(imported?.localMapStats?.manualRows) || 0,
         path: getLocalStatsPath()
@@ -1457,6 +2715,95 @@ ipcMain.handle("local:import-xlsx", async () => {
       importedCount: imported.importedCount,
       batchIndexes: imported.batchIndexes || [],
       filePath
+    }
+  };
+});
+
+ipcMain.handle("local:export-xlsx", async () => {
+  const focusedWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+  const saveResult = await dialog.showSaveDialog(focusedWindow, {
+    title: "导出本地统计（xlsx）",
+    defaultPath: path.join(
+      app.getPath("downloads"),
+      `本地统计导出-${normalizeUin(currentUin) || "unknown"}.xlsx`
+    ),
+    filters: [{ name: "Excel", extensions: ["xlsx"] }]
+  });
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { success: false, message: "已取消导出" };
+  }
+  const runtime = ensureLocalRuntime();
+  const exportInfo = createXlsxExportFromTemplate(
+    saveResult.filePath,
+    latestConfigMapping,
+    runtime,
+    currentUin
+  );
+  return {
+    success: true,
+    message: `导出完成：${exportInfo.rowCount}行（uin: ${normalizeUin(currentUin) || "unknown"}）`,
+    data: {
+      filePath: saveResult.filePath,
+      exportInfo
+    }
+  };
+});
+
+ipcMain.handle("local:export-json", async () => {
+  const focusedWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+  const saveResult = await dialog.showSaveDialog(focusedWindow, {
+    title: "导出本地记录（json）",
+    defaultPath: path.join(
+      app.getPath("downloads"),
+      `local-records-${normalizeUin(currentUin) || "unknown"}.json`
+    ),
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (saveResult.canceled || !saveResult.filePath) {
+    return { success: false, message: "已取消导出" };
+  }
+  const payload = exportLocalRecordsToJson(saveResult.filePath);
+  return {
+    success: true,
+    message: `JSON导出完成：${payload.count}条（uin: ${payload.uin || "unknown"}）`,
+    data: {
+      filePath: saveResult.filePath,
+      count: payload.count,
+      uin: payload.uin
+    }
+  };
+});
+
+ipcMain.handle("local:import-json", async () => {
+  const focusedWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+  const result = await dialog.showOpenDialog(focusedWindow, {
+    title: "导入本地记录（json）",
+    properties: ["openFile"],
+    filters: [{ name: "JSON", extensions: ["json"] }]
+  });
+  if (result.canceled || !result.filePaths?.length) {
+    return { success: false, message: "已取消导入" };
+  }
+  const filePath = result.filePaths[0];
+  const json = readJsonFile(filePath, null);
+  if (!json) {
+    return { success: false, message: "JSON文件读取失败" };
+  }
+  const imported = importLocalStatsFromJsonPayload(json);
+  return {
+    success: true,
+    message: `JSON导入完成：新增 ${imported.inserted}，更新 ${imported.upgraded}`,
+    data: {
+      filePath,
+      localMapStats: imported.localMapStats,
+      localRecords: imported.localRecords,
+      localStatsMeta: {
+        uin: normalizeUin(currentUin) || "",
+        inserted: imported.inserted,
+        updated: imported.upgraded,
+        totalRecords: imported.totalRecords,
+        path: getLocalStatsPath()
+      }
     }
   };
 });
@@ -1487,7 +2834,9 @@ ipcMain.handle("local:download-template-xlsx", async () => {
     configError = error?.message || String(error);
   }
 
-  const templateInfo = createXlsxTemplate(saveResult.filePath, configMapping);
+  const templateInfo = createXlsxTemplate(saveResult.filePath, configMapping, {
+    uin: currentUin
+  });
   const isEmpty = Number(templateInfo?.rowCount) <= 0;
   const message = isEmpty
     ? configSource === "api_failed"
@@ -1507,7 +2856,7 @@ ipcMain.handle("local:download-template-xlsx", async () => {
   };
 });
 
-ipcMain.handle("session:bind-access-token", (_, rawInput) => {
+async function bindAccountAndLoadUserInfo(rawInput) {
   const payload =
     rawInput && typeof rawInput === "object"
       ? rawInput
@@ -1533,47 +2882,74 @@ ipcMain.handle("session:bind-access-token", (_, rawInput) => {
     throw new Error("openid is required");
   }
 
-  currentOpenId = normalizedOpenId;
-  currentAccessToken = accessToken;
-  persistAccount();
+  const [userInfoResult, detailProfileResult] = await Promise.allSettled([
+    fetchUserInfo(normalized),
+    resolveProfileFromLatestGameDetail(normalized)
+  ]);
+  if (userInfoResult.status !== "fulfilled") {
+    throw userInfoResult.reason;
+  }
+  const profile = extractUserProfileFromUserInfo(userInfoResult.value);
+  if (!profile.uin) {
+    throw new Error("user.info missing uin");
+  }
+  const detailProfile =
+    detailProfileResult.status === "fulfilled" &&
+    detailProfileResult.value &&
+    typeof detailProfileResult.value === "object"
+      ? detailProfileResult.value
+      : {};
+  const preferredNickname = String(detailProfile.nickname || profile.nickname || "").trim();
+  let resolvedNickname = preferredNickname;
+  // If nickname remains URL-encoded or decode failed, fallback to uin to avoid garbled account labels.
+  if (!resolvedNickname || /%[0-9A-Fa-f]{2}/.test(resolvedNickname)) {
+    resolvedNickname = profile.uin;
+  }
+  const resolvedAvatar = String(detailProfile.avatar || profile.avatar || "").trim();
+
+  upsertBoundAccount({
+    uin: profile.uin,
+    openid: normalizedOpenId,
+    accessToken,
+    nickname: resolvedNickname,
+    avatar: resolvedAvatar
+  });
   persistSession();
 
   return {
     success: true,
-    message: "openid/token saved locally",
+    message: "账号已保存并切换",
+    data: {
+      uin: currentUin,
+      nickname: currentNickname,
+      avatar: currentAvatar,
+      openid: currentOpenId,
+      accessToken: currentAccessToken,
+      accounts: getPublicAccounts(),
+      localStatsPath: getLocalStatsPath()
+    },
     cookiePreview: `${normalized.slice(0, 72)}...`
   };
+}
+
+ipcMain.handle("session:bind-access-token", async (_, rawInput) => {
+  return bindAccountAndLoadUserInfo(rawInput);
 });
 
 // Backward compatibility with old renderer API.
-ipcMain.handle("session:bind-cookie", (_, rawCookie) => {
-  const normalized = normalizeCookie(rawCookie);
-  const accessToken = extractTokenFromCookie(normalized);
-  const openid =
-    normalizeOpenId(extractOpenIdFromCookie(normalized)) ||
-    normalizeOpenId(currentOpenId) ||
-    "";
-  if (!accessToken) {
-    throw new Error("access_token is required");
-  }
-  if (!openid) {
-    throw new Error("openid is required");
-  }
-
-  currentOpenId = openid;
-  currentAccessToken = accessToken;
-  persistAccount();
-  persistSession();
-
-  return {
-    success: true,
-    message: "openid/token saved locally",
-    cookiePreview: `${normalized.slice(0, 72)}...`
-  };
+ipcMain.handle("session:bind-cookie", async (_, rawCookie) => {
+  return bindAccountAndLoadUserInfo(rawCookie);
 });
 
 ipcMain.handle("session:clear-access-token", () => {
   currentAccessToken = "";
+  if (currentUin) {
+    const idx = (accountStore?.accounts || []).findIndex((x) => x.uin === currentUin);
+    if (idx >= 0) {
+      accountStore.accounts[idx].accessToken = "";
+      accountStore.accounts[idx].updatedAt = Date.now();
+    }
+  }
   persistAccount();
   persistSession();
   return { success: true };
@@ -1581,6 +2957,13 @@ ipcMain.handle("session:clear-access-token", () => {
 
 ipcMain.handle("session:clear-cookie", () => {
   currentAccessToken = "";
+  if (currentUin) {
+    const idx = (accountStore?.accounts || []).findIndex((x) => x.uin === currentUin);
+    if (idx >= 0) {
+      accountStore.accounts[idx].accessToken = "";
+      accountStore.accounts[idx].updatedAt = Date.now();
+    }
+  }
   persistAccount();
   persistSession();
   return { success: true };
@@ -1591,22 +2974,12 @@ ipcMain.handle("stats:get", async () => {
   if (!result?.success || !result?.data) {
     return result;
   }
-
-  if (result.data.configMapping && typeof result.data.configMapping === "object") {
-    latestConfigMapping = result.data.configMapping;
+  const syncResult = syncLocalRecordsFromStatsData(result.data);
+  if (syncResult?.success) {
+    result.data.localMapStats = syncResult.data.localMapStats;
+    result.data.localRecords = syncResult.data.localRecords;
+    result.data.localStatsMeta = syncResult.data.localStatsMeta;
   }
-
-  const merged = mergeLocalStats(
-    Array.isArray(result.data.gameList) ? result.data.gameList : [],
-    latestConfigMapping
-  );
-
-  result.data.localMapStats = merged.localMapStats;
-  result.data.localStatsMeta = {
-    inserted: merged.inserted,
-    totalRecords: merged.totalRecords,
-    path: merged.localStatsPath
-  };
   return result;
 });
 
@@ -1626,6 +2999,7 @@ app.whenReady().then(() => {
   setApiLogHandler(appendApiLog);
   loadPersistedSession();
   loadPersistedAccount();
+  loadPersistedQiniuConfig();
   createMainWindow();
   checkNoticeInBackground().catch(() => {});
   if (logWindowVisible) {

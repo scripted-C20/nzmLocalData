@@ -1,52 +1,82 @@
-# 逆战未来数据统计（Electron）
+﻿# 逆战未来数据统计（Electron）
 
-基于官方接口的桌面客户端，提供数据统计、历史战绩、游戏图鉴、本地历史累计与公告通知。
-所有数据均来自逆战未来工具箱小程序
+基于官方接口的桌面客户端，提供数据统计、历史战绩、图鉴、本地统计、本地战绩、公告通知与云同步能力。
 
-## 关于openid和token的获取
+谨防上当受骗。
 
-- 工具非本人写的 从nzm.haman.moe 里面得到的 注意辨别 自己有更好的抓包方式请勿使用
-- 不要把Cookie发送&暴露给任何人！
-- 有梯子的
-- [工具下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I)
-- 移动云盘
-- [下载地址](https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0)
+## 功能概览 （2026-03-01）
 
-## 工具exe下载
+- 账号绑定（多账号）
+  - 使用 `openid + access_token` 绑定。
+  - 账号信息保存在 `data/account-binding.json`。
+  - 支持账号切换与本地数据按 `uin` 分文件保存。
 
-- 有梯子的
-- [下载地址](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQDY6zw3MDP2QI7hV6CuXUMHAaap-nNQezsd0jGJ58qtISc?e=ZhCW1o)
-- 移动云盘
-- [下载地址](https://yun.139.com/shareweb/#/w/i/2sUfJ6TsfFxxs)
+- 数据统计
+  - 官方历史数据卡片。
+  - 近期战绩统计、近期模式统计、近期地图详情。
+  - 武器碎片进度展示。
+
+- 历史战绩
+  - 分页展示（每页 10 条）。
+  - 模式、地图等筛选。
+  - 支持展开单局详情（含 roomID 详情接口）。
+
+- 本地统计
+  - 本地聚合统计（地图/难度/场次/通过率）。
+  - 支持模板导入（Excel）与无模板 JSON 导入。
+  - 支持分批导入、分批清理、清空全部导入数据、清空所有数据。
+  - 支持“仅显示有数据”开关。
+
+- 本地战绩
+  - 从本地 JSON 展示战绩列表。
+  - 支持自动筛选。
+
+- 图鉴
+  - 武器/陷阱图鉴展示与拥有率显示。
+  - 图片懒加载优化。
+
+- 七牛云同步（私有空间）
+  - 支持将本地数据同步到七牛云（覆盖上传）。
+  - 支持从七牛云拉取并合并本地数据。
+  - 配置项：`AccessKey`、`SecretKey`、协议、域名、路径、存储空间名。
+  - 私有空间下载使用签名 URL：`?e=时间戳&token=...`。
+
+## 本地数据文件
+
+- 账号绑定：`data/account-binding.json`
+- 七牛云配置：`data/qiniu-config.json`
+- 本地统计：`local-stats{uin}.json`
+- 兼容迁移：若存在旧数据，会迁移 `records` 到新文件并清理旧文件（仅限应用用户目录安全范围）。
+
+## openid / token 获取说明
+
+- 工具非本人编写，可从 `nzm.haman.moe` 获取。
+- 不要泄露 Cookie / token 给任何人。
+- 如你有更安全的抓包方式，优先使用你自己的方案。
+
+## 下载
+
+### 获取token工具下载
+
+- OneDrive：<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I>
+- 移动云盘：<https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0>
+
+### 工具EXE 下载
+
+- OneDrive：<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQCm5Udy_8xlQ4AMa-RBbeSSAerthHDW5yh7eFvkGs3E-2o?e=75VoCP>
+- 移动云盘：<https://yun.139.com/shareweb/#/w/i/2tyanM53Tiz0g>
 
 ## 功能截图
 
 ![应用截图1](screenshot/1.png)
 ![应用截图2](screenshot/2.png)
 ![应用截图3](screenshot/3.png)
-
-## 功能概览（数据都在本地）
-
-- 隐私保护
-  - 所有数据处理均在客户端完成或仅通过代理转发 无服务器运行（公告也是开源公开的）
-- 账号绑定
-  - 仅使用 `openid + token(access_token)` 绑定。
-  - 账号信息保存在项目目录：`data/account-binding.json`。
-- 数据统计
-  - 官方历史数据卡片、近期战绩统计、近期模式统计、近期地图详情。
-  - 武器碎片进度显示。
-- 历史战绩
-  - 支持分页、模式筛选、难度筛选、地图筛选（暂不支持）。
-  - 支持展开单局详情。
-- 本地历史
-  - 支持 `xlsx/xls` 导入、模板下载、批次统计、按地图清除导入数据。
-  - 支持“仅显示有数据”开关（默认开启）。
-- 游戏图鉴
-  - 武器/陷阱/插件图鉴与拥有率展示
+![应用截图4](screenshot/4.png)
+![应用截图5](screenshot/5.png)
 
 ## 本地运行
 
-·已安装 Node.js 环境
+先安装 Node.js，然后执行：
 
 ```bash
 npm install
@@ -57,14 +87,15 @@ npm run start
 
 ```bash
 npm run build:win
-npm run build:mac（没设备自测）
+npm run build:mac
 ```
 
 输出目录：`dist/`
 
-## 接口说明（当前）
+## 依赖
 
-- 使用的是官方数据接口
+- 运行时依赖：`qiniu`
+- 开发依赖：`electron`、`electron-builder`、`xlsx`
 
 ## 免责声明
 
@@ -72,9 +103,7 @@ npm run build:mac（没设备自测）
 
 ## 赞助
 
-可直接在公告内容中使用以下赞助二维码：
-
 - 微信赞助  
-  ![微信赞助](screenshot/wx.png)
+  ![微信赞助](https://gitee.com/returnee/nzm-notice/raw/master/109ca48c174d1c4960861cc0cba7b114.png)
 - 支付宝赞助  
-  ![支付宝赞助](screenshot/zfb.jpg)
+  ![支付宝赞助](https://gitee.com/returnee/nzm-notice/raw/master/5adfe08bd18914fa701ab08bb319915f.jpg)
