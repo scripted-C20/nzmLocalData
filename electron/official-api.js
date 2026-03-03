@@ -11,8 +11,6 @@
 };
 
 const EXTERNAL_ENDPOINTS = {
-  stats: "https://nzm.haman.moe/api/stats",
-  homeCollection: "https://nzm.haman.moe/api/collection?type=home"
 };
 
 const FIXED_COOKIE_FIELDS = Object.freeze({
@@ -293,9 +291,13 @@ async function fetchGamePage(cookie, page, limit = 10, options = {}) {
   return Array.isArray(data?.gameList) ? data.gameList : [];
 }
 
-async function fetchAllGames(cookie, maxPages = 10) {
+async function fetchAllGames(cookie, maxPages = 10, delayMs = 0) {
   const list = [];
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   for (let page = 1; page <= maxPages; page += 1) {
+    if (page > 1 && delayMs > 0) {
+      await delay(delayMs);
+    }
     const current = await fetchGamePage(cookie, page, 10);
     if (!current.length) break;
     list.push(...current);
@@ -330,6 +332,14 @@ function normalizeConfigPayload(configPayload) {
         : {},
     mapInfo:
       config?.mapInfo && typeof config.mapInfo === "object" ? config.mapInfo : {},
+    huntingFieldPartitionArea:
+      config?.huntingFieldPartitionArea && typeof config.huntingFieldPartitionArea === "object"
+        ? config.huntingFieldPartitionArea
+        : config?.huntingFielartitionArea && typeof config.huntingFielartitionArea === "object"
+          ? config.huntingFielartitionArea
+          : config?.huntingPartitionArea && typeof config.huntingPartitionArea === "object"
+            ? config.huntingPartitionArea
+            : {},
     modeInfo:
       config?.modeInfo && typeof config.modeInfo === "object"
         ? config.modeInfo
@@ -355,6 +365,67 @@ function firstText(obj, keys) {
   return "";
 }
 
+function parseJsonIfString(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const text = value.trim();
+  if (!text) {
+    return value;
+  }
+  const first = text[0];
+  const last = text[text.length - 1];
+  const maybeJson =
+    (first === "{" && last === "}") ||
+    (first === "[" && last === "]");
+  if (!maybeJson) {
+    return value;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return value;
+  }
+}
+
+function toPartitionAreaList(value) {
+  const parsed = parseJsonIfString(value);
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (parsed && typeof parsed === "object") {
+    return Object.entries(parsed).map(([id, node]) => {
+      if (node && typeof node === "object" && !Array.isArray(node)) {
+        return {
+          ...node,
+          areaId: firstText(node, ["areaId", "iAreaId", "id"]) || String(id || "").trim()
+        };
+      }
+      return {
+        areaId: String(id || "").trim(),
+        areaName: String(node || "").trim()
+      };
+    });
+  }
+  return [];
+}
+
+function buildPartitionAreaNameMap(configPayload) {
+  const cfg = normalizeConfigPayload(configPayload);
+  const map = {};
+  toPartitionAreaList(cfg.huntingFieldPartitionArea).forEach((item, index) => {
+    const areaId = firstText(item, ["areaId", "iAreaId", "id"]) || String(index + 1);
+    if (!areaId) {
+      return;
+    }
+    const areaName =
+      firstText(item, ["areaName", "name", "partitionName", "displayName", "label"]) ||
+      `区域${areaId}`;
+    map[areaId] = areaName;
+  });
+  return map;
+}
+
 function normalizeDifficultyName(value) {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -371,6 +442,238 @@ function normalizeDifficultyName(value) {
     return "折磨I";
   }
   return raw;
+}
+
+function extractBossDamage(game) {
+  const direct =
+    Number(game?.iBossDamage || 0) ||
+    Number(game?.bossDamage || 0) ||
+    Number(game?.iBossHurt || 0) ||
+    Number(game?.bossHurt || 0) ||
+    Number(game?.iBossDmg || 0) ||
+    Number(game?.damageTotalOnBoss || 0) ||
+    Number(game?.iDamage || 0) ||
+    Number(game?.iTotalDamage || 0) ||
+    Number(game?.damage || 0) ||
+    Number(game?.iHurt || 0) ||
+    Number(game?.hurt || 0) ||
+    0;
+  if (direct > 0) {
+    return direct;
+  }
+
+  const lowPairs = Object.entries(game || {});
+  for (const [key, value] of lowPairs) {
+    const text = String(key || "").toLowerCase();
+    if (!text.includes("boss")) {
+      continue;
+    }
+    if (!text.includes("damage") && !text.includes("hurt") && !text.includes("dmg")) {
+      continue;
+    }
+    const num = Number(value || 0);
+    if (num > 0) {
+      return num;
+    }
+  }
+  return 0;
+}
+
+function toObjectSafe(value) {
+  const parsed = parseJsonIfString(value);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed;
+  }
+  return {};
+}
+
+function toArraySafe(value) {
+  const parsed = parseJsonIfString(value);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function getRoomIdFromGame(game) {
+  return firstText(game, [
+    "roomID",
+    "DsRoomId",
+    "dsRoomId",
+    "sRoomID",
+    "roomId",
+    "iRoomId",
+    "roomid",
+    "id"
+  ]);
+}
+
+function getRecentTargetGames(gameList) {
+  const targetModes = ["猎场", "僵尸", "塔防", "时空追捕"];
+  return gameList.filter(g => {
+    const rawMode = String(g?.modeName || g?.sModeName || g?.sTypeName || "").toLowerCase();
+    return targetModes.some(t => rawMode.includes(t));
+  });
+}
+
+function calculateAvgBossDamageFromGames(validGames) {
+  const recent10 = validGames.slice(0, 10);
+  const bossDamageSamples = recent10
+    .map((g) => extractBossDamage(g))
+    .filter((x) => Number(x) > 0);
+  if (!bossDamageSamples.length) {
+    return 0;
+  }
+  return Math.floor(
+    bossDamageSamples.reduce((acc, x) => acc + Number(x), 0) / bossDamageSamples.length
+  );
+}
+
+function findSelfPlayerFromDetailPayload(detailPayload) {
+  const payload = toObjectSafe(detailPayload);
+  const list = toArraySafe(payload?.list);
+  if (!list.length) {
+    return null;
+  }
+  const markedSelf = list.find((item) => {
+    const node = toObjectSafe(item);
+    return (
+      Number(node?.isSelf) === 1 ||
+      Number(node?.self) === 1 ||
+      Number(node?.isMe) === 1 ||
+      Number(node?.iSelf) === 1
+    );
+  });
+  if (markedSelf) {
+    return markedSelf;
+  }
+
+  const loginUser = toObjectSafe(payload?.loginUserDetail);
+  const loginUin = firstText(loginUser, ["uin", "iUin", "uid", "roleId", "openId", "openid"]);
+  const loginNick = firstText(loginUser, ["nickname", "name", "nickName"]);
+
+  if (loginUin) {
+    const byUin = list.find((item) => {
+      const node = toObjectSafe(item);
+      const playerUin = firstText(node, ["uin", "iUin", "uid", "roleId", "openId", "openid"]);
+      return playerUin && playerUin === loginUin;
+    });
+    if (byUin) {
+      return byUin;
+    }
+  }
+
+  if (loginNick) {
+    const byNick = list.find((item) => {
+      const node = toObjectSafe(item);
+      const playerNick = firstText(node, ["nickname", "name", "nickName"]);
+      return playerNick && playerNick === loginNick;
+    });
+    if (byNick) {
+      return byNick;
+    }
+  }
+
+  return list[0];
+}
+
+function extractBossDamageFromDetailPayload(detailPayload) {
+  const payload = toObjectSafe(detailPayload);
+  const rootHuntingDetails = toObjectSafe(
+    payload?.huntingDetails || payload?.huntingDetail || payload?.huntingData
+  );
+  const rootBossDamage =
+    Number(rootHuntingDetails?.damageTotalOnBoss || 0) ||
+    Number(rootHuntingDetails?.bossDamage || 0) ||
+    Number(rootHuntingDetails?.damageBoss || 0) ||
+    0;
+  if (rootBossDamage > 0) {
+    return rootBossDamage;
+  }
+
+  const loginUser = toObjectSafe(payload?.loginUserDetail);
+  const loginHuntingDetails = toObjectSafe(
+    loginUser?.huntingDetails || loginUser?.huntingDetail || loginUser?.huntingData
+  );
+  const loginBossDamage =
+    Number(loginHuntingDetails?.damageTotalOnBoss || 0) ||
+    Number(loginHuntingDetails?.bossDamage || 0) ||
+    Number(loginHuntingDetails?.damageBoss || 0) ||
+    extractBossDamage(loginUser);
+  if (loginBossDamage > 0) {
+    return loginBossDamage;
+  }
+
+  const player = findSelfPlayerFromDetailPayload(payload);
+  if (player) {
+    const playerNode = toObjectSafe(player);
+    const huntingDetails = toObjectSafe(
+      playerNode?.huntingDetails || playerNode?.huntingDetail || playerNode?.huntingData
+    );
+    const fromSelf =
+      Number(huntingDetails?.damageTotalOnBoss || 0) ||
+      Number(huntingDetails?.bossDamage || 0) ||
+      Number(huntingDetails?.damageBoss || 0) ||
+      extractBossDamage(playerNode);
+    if (fromSelf > 0) {
+      return fromSelf;
+    }
+  }
+
+  const list = toArraySafe(payload?.list);
+  const samples = list
+    .map((item) => {
+      const node = toObjectSafe(item);
+      const huntingDetails = toObjectSafe(
+        node?.huntingDetails || node?.huntingDetail || node?.huntingData
+      );
+      return (
+        Number(huntingDetails?.damageTotalOnBoss || 0) ||
+        Number(huntingDetails?.bossDamage || 0) ||
+        Number(huntingDetails?.damageBoss || 0) ||
+        extractBossDamage(node)
+      );
+    })
+    .filter((value) => Number(value) > 0);
+
+  if (samples.length > 0) {
+    return Math.max(...samples);
+  }
+  return 0;
+}
+
+async function calculateAvgBossDamageFromDetails(cookie, validGames) {
+  const roomIds = [...new Set(
+    validGames
+      .slice(0, 10)
+      .map((game) => getRoomIdFromGame(game))
+      .filter((roomId) => roomId)
+  )];
+  if (!roomIds.length) {
+    return 0;
+  }
+
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const samples = [];
+  for (const roomId of roomIds) {
+    try {
+      const detail = await postOfficialApi(
+        cookie,
+        "center.game.detail",
+        { seasonID: 1, roomID: roomId },
+        OFFICIAL_ENDPOINTS.miniProgramRecordInfoPage
+      );
+      const damage = extractBossDamageFromDetailPayload(detail);
+      if (Number(damage) > 0) {
+        samples.push(Number(damage));
+      }
+    } catch (_) {
+      // ignore single-room detail failure
+    }
+    await delay(120);
+  }
+
+  if (!samples.length) {
+    return 0;
+  }
+  return Math.floor(samples.reduce((acc, x) => acc + Number(x), 0) / samples.length);
 }
 
 function applyConfigMappingToGames(gameList, configPayload) {
@@ -449,47 +752,99 @@ function buildOverview(summary, gameList) {
   };
 }
 
-async function fetchExternalStats(cookie) {
-  const requestInfo = {
-    endpoint: EXTERNAL_ENDPOINTS.stats,
-    method: "GET"
+function calculateRecentStats(validGames) {
+  const total = validGames.length;
+  if (total === 0) return { totalGames: 0, winRate: 0, avgScore: 0 };
+  
+  const winCount = validGames.filter(g => Number(g.iIsWin) === 1 || Number(g.iIsWin) === 2).length;
+  const totalScore = validGames.reduce((acc, g) => acc + Number(g.iScore || 0), 0);
+
+  return {
+    totalGames: total,
+    winRate: Number(((winCount / total) * 100).toFixed(2)),
+    avgScore: Math.floor(totalScore / total)
   };
-  logApiRequest("external:request", requestInfo);
-  try {
-    const response = await fetch(EXTERNAL_ENDPOINTS.stats, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Cookie: cookie
+}
+
+function calculateModeStats(gameList) {
+  const result = {};
+  gameList.forEach(g => {
+    const rawMode = String(g.modeName || g.sModeName || g.sTypeName || "").toLowerCase();
+    let category = "";
+    if (rawMode.includes("猎场") || rawMode.includes("僵尸")) category = "僵尸猎场";
+    else if (rawMode.includes("塔防")) category = "塔防";
+    else if (rawMode.includes("时空追捕")) category = "时空追捕";
+    
+    if (category) {
+      if (!result[category]) {
+        result[category] = { matchCount: 0, winCount: 0, lossCount: 0 };
       }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Stats endpoint failed: ${response.status}`);
+      result[category].matchCount++;
+      if (Number(g.iIsWin) === 1 || Number(g.iIsWin) === 2) {
+        result[category].winCount++;
+      } else {
+        result[category].lossCount++;
+      }
     }
+  });
 
-    const data = await response.json();
-    if (data?.success === false) {
-      throw new Error(data?.message || "Stats endpoint returned failure");
+  return Object.keys(result).map(key => {
+    const data = result[key];
+    return {
+      modeName: key,
+      matchCount: data.matchCount,
+      winCount: data.winCount,
+      lossCount: data.lossCount,
+      winRate: data.matchCount > 0 ? Number(((data.winCount / data.matchCount) * 100).toFixed(2)) : 0
+    };
+  });
+}
+
+function calculateMapStats(gameList) {
+  const mapGroups = {};
+  gameList.forEach(g => {
+    const rawMode = String(g.modeName || g.sModeName || g.sTypeName || "").toLowerCase();
+    const isTargetMode = ["猎场", "僵尸", "塔防", "时空追捕"].some(t => rawMode.includes(t));
+    if (!isTargetMode) return;
+
+    const mapName = g.mapName || "未知地图";
+    const diffName = g.diffName || "未知难度";
+    
+    if (!mapGroups[mapName]) {
+      mapGroups[mapName] = { mapName, matchCount: 0, winCount: 0, difficulties: {} };
     }
+    const group = mapGroups[mapName];
+    group.matchCount++;
+    const isWin = Number(g.iIsWin) === 1 || Number(g.iIsWin) === 2;
+    if (isWin) group.winCount++;
 
-    const payload = data?.data || {};
-    logApiRequest("external:response", {
-      ...requestInfo,
-      status: response.status,
-      success: data?.success !== false,
-      summary: summarizePayload(payload),
-      data: payload
+    if (!group.difficulties[diffName]) {
+      group.difficulties[diffName] = { diffName, matchCount: 0, winCount: 0 };
+    }
+    group.difficulties[diffName].matchCount++;
+    if (isWin) group.difficulties[diffName].winCount++;
+  });
+
+  return Object.keys(mapGroups).map(key => {
+    const group = mapGroups[key];
+    const diffList = Object.keys(group.difficulties).map(dk => {
+      const d = group.difficulties[dk];
+      return {
+        diffName: d.diffName,
+        matchCount: d.matchCount,
+        winCount: d.winCount,
+        winRate: d.matchCount > 0 ? Number(((d.winCount / d.matchCount) * 100).toFixed(2)) : 0
+      };
     });
 
-    return payload;
-  } catch (error) {
-    logApiRequest("external:error", {
-      ...requestInfo,
-      error: error?.message || String(error)
-    });
-    throw error;
-  }
+    return {
+      mapName: group.mapName,
+      matchCount: group.matchCount,
+      winCount: group.winCount,
+      winRate: group.matchCount > 0 ? Number(((group.winCount / group.matchCount) * 100).toFixed(2)) : 0,
+      difficulties: diffList
+    };
+  }).sort((a, b) => b.matchCount - a.matchCount);
 }
 
 async function fetchStats(cookie) {
@@ -499,17 +854,8 @@ async function fetchStats(cookie) {
     cookieFixed: true
   });
 
-  let externalData = {};
-  try {
-    externalData = await fetchExternalStats(normalized);
-  } catch (_) {
-    externalData = {};
-  }
-
-  const externalGameList = Array.isArray(externalData?.gameList) ? externalData.gameList : [];
-  let gameList = externalGameList.length
-    ? externalGameList
-    : await fetchAllGames(normalized, 10);
+  // Fetch recent 100 games directly from official API (paginated, 2s delay)
+  let gameList = await fetchAllGames(normalized, 10, 2000);
 
   let configMapping = {};
   try {
@@ -520,46 +866,36 @@ async function fetchStats(cookie) {
 
   gameList = applyConfigMappingToGames(gameList, configMapping);
 
-  const summary =
-    externalData?.officialSummary && typeof externalData.officialSummary === "object"
-      ? externalData.officialSummary
-      : await fetchUserSummary(normalized);
+  // Use center.user.stat for Official Summary
+  let summary = {};
+  try {
+    summary = await fetchUserSummary(normalized);
+  } catch (_) {}
 
-  const builtOverview = buildOverview(summary, gameList);
+  // Calculate stats natively
+  const recentTargetGames = getRecentTargetGames(gameList);
+  const recentStats = calculateRecentStats(recentTargetGames);
+  const avgBossDamage = calculateAvgBossDamageFromGames(recentTargetGames);
+  const modeStats = calculateModeStats(gameList);
+  const mapStats = calculateMapStats(gameList);
 
   const result = {
     success: true,
     data: {
-      overview: {
-        ...builtOverview,
-        totalGames: Number(externalData?.totalGames) || builtOverview.totalGames,
-        winRate: Number(externalData?.winRate) || builtOverview.winRate,
-        avgScore:
-          Number(externalData?.avgDamage) ||
-          Number(externalData?.avgScore) ||
-          Number(externalData?.averageScore) ||
-          builtOverview.avgScore,
-        totalDamage: Number(externalData?.totalDamage) || 0,
-        totalDuration: Number(externalData?.totalDuration) || 0,
-        totalWin: Number(externalData?.totalWin) || 0,
-        totalLoss: Number(externalData?.totalLoss) || 0
-      },
       gameList,
-      modeStats:
-        externalData?.modeStats && typeof externalData.modeStats === "object"
-          ? externalData.modeStats
-          : {},
-      mapStats:
-        externalData?.mapStats && typeof externalData.mapStats === "object"
-          ? externalData.mapStats
-          : {},
+      overview: {
+        totalGames: recentStats.totalGames,
+        winRate: recentStats.winRate,
+        avgScore: recentStats.avgScore,
+        avgBossDamage
+      },
+      modeStats,
+      mapStats,
       configMapping: normalizeConfigPayload(configMapping).raw || {},
-      officialSummary:
-        externalData?.officialSummary && typeof externalData.officialSummary === "object"
-          ? externalData.officialSummary
-          : summary
+      officialSummary: summary
     }
   };
+  
   logApiRequest("stats:response", {
     endpoint: "stats:get",
     summary: summarizePayload(result?.data),
@@ -637,54 +973,7 @@ async function fetchHistory(cookie, query = {}) {
   return result;
 }
 
-async function fetchExternalHomeCollection(cookie) {
-  const requestInfo = {
-    endpoint: EXTERNAL_ENDPOINTS.homeCollection,
-    method: "GET"
-  };
-  logApiRequest("external:request", requestInfo);
-  try {
-    const response = await fetch(EXTERNAL_ENDPOINTS.homeCollection, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Cookie: cookie
-      }
-    });
 
-    if (!response.ok) {
-      throw new Error(`Home collection endpoint failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-    if (data?.success === false) {
-      throw new Error(data?.message || "Home collection endpoint returned failure");
-    }
-
-    const payload = data?.data;
-    const homeList = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload?.home)
-        ? payload.home
-        : [];
-
-    logApiRequest("external:response", {
-      ...requestInfo,
-      status: response.status,
-      success: data?.success !== false,
-      summary: summarizePayload(homeList),
-      data: homeList
-    });
-
-    return homeList;
-  } catch (error) {
-    logApiRequest("external:error", {
-      ...requestInfo,
-      error: error?.message || String(error)
-    });
-    throw error;
-  }
-}
 
 async function fetchCollection(cookie) {
   const normalized = normalizeCookie(cookie);
@@ -726,11 +1015,6 @@ async function fetchCollection(cookie) {
   const plugins = Array.isArray(pluginList?.list) ? pluginList.list : [];
 
   let homeWeapons = [];
-  try {
-    homeWeapons = await fetchExternalHomeCollection(normalized);
-  } catch (_) {
-    homeWeapons = [];
-  }
 
   if (!homeWeapons.length) {
     try {
@@ -740,7 +1024,11 @@ async function fetchCollection(cookie) {
         { seasonID: 1, limit: 8 },
         OFFICIAL_ENDPOINTS.miniProgramHandbookPage
       );
-      homeWeapons = Array.isArray(home?.weaponList) ? home.weaponList : [];
+      const rawHome = Array.isArray(home?.weaponList) ? home.weaponList : (Array.isArray(home?.home) ? home.home : []);
+      homeWeapons = rawHome.filter(item => {
+        const prog = item?.itemProgress;
+        return prog && typeof prog === "object" && Object.keys(prog).length > 0;
+      });
     } catch (_) {
       homeWeapons = [];
     }
@@ -779,16 +1067,24 @@ async function fetchDetail(cookie, roomId) {
     roomId: room
   });
 
-  const detail = await postOfficialApi(
-    normalized,
-    "center.game.detail",
-    { seasonID: 1, roomID: room },
-    OFFICIAL_ENDPOINTS.miniProgramRecordInfoPage
-  );
+  const [detail, configPayload] = await Promise.all([
+    postOfficialApi(
+      normalized,
+      "center.game.detail",
+      { seasonID: 1, roomID: room },
+      OFFICIAL_ENDPOINTS.miniProgramRecordInfoPage
+    ),
+    fetchConfigList(normalized).catch(() => ({}))
+  ]);
+  const payload = detail && typeof detail === "object" ? detail : {};
+  const partitionAreaMap = buildPartitionAreaNameMap(configPayload);
 
   const result = {
     success: true,
-    data: detail
+    data: {
+      ...payload,
+      partitionAreaMap
+    }
   };
   logApiRequest("detail:response", {
     endpoint: "detail:get",

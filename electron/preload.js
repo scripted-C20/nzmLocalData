@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("nzmApi", {
   exportLocalRecordsJson: () => ipcRenderer.invoke("local:export-json"),
   syncLocalStatsToCloud: () => ipcRenderer.invoke("local:cloud-sync"),
   pullLocalStatsFromCloud: () => ipcRenderer.invoke("local:cloud-pull"),
+  saveLocalBattleRemark: (payload) => ipcRenderer.invoke("local:save-remark", payload),
   downloadLocalTemplateXlsx: () =>
     ipcRenderer.invoke("local:download-template-xlsx"),
   onLogWindowVisibleChange: (handler) => {

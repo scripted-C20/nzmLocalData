@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>逆战未来数据统计2.0</title>
+  <title>逆战未来数据统计3.0</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 
@@ -43,9 +43,9 @@
         <div class="session-actions">
           <button id="save-token-btn">保存并加载</button>
           <button id="refresh-all-btn" class="ghost">刷新数据</button>
-          <!-- <button  id="clear-token-btn" class="ghost danger">清空</button> -->
+          <!-- <button hidden  id="clear-token-btn" class="ghost danger">清空</button> -->
         </div>
-        <div class="log-toggle-row hidden">
+        <div class="log-toggle-row ">
           <label for="log-window-toggle">日志窗口</label>
           <input id="log-window-toggle" type="checkbox" />
         </div>
@@ -118,6 +118,11 @@
           </select>
           <select id="local-battle-map-select" class="history-filter-select">
             <option value="all">全部地图</option>
+          </select>
+          <select id="local-battle-remark-select" class="history-filter-select">
+            <option value="all">全部备注</option>
+            <option value="has">有备注</option>
+            <option value="none">无备注</option>
           </select>
           <button id="local-battle-prev-btn" class="ghost">上一页</button>
           <span id="local-battle-page-info">第 1 页 / 共 1 页</span>

@@ -333,6 +333,164 @@ function toTimestamp(value) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+function normalizeRoomIdText(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  return raw.replace(/[^0-9A-Za-z_-]/g, "").toLowerCase();
+}
+
+function buildLocalRecordIdentityKey(record = {}) {
+  const roomId = normalizeRoomIdText(
+    pickFirst(record, ["dsRoomId", "DsRoomId", "roomID", "roomId", "roomid"], "")
+  );
+  if (roomId) {
+    return `room:${roomId}`;
+  }
+  const mapId = toPositiveInt(record?.mapId) || 0;
+  const mapKey =
+    mapId > 0
+      ? `id:${mapId}`
+      : String(record?.mapName || "").trim().toLowerCase();
+  const modeKey = `mode:${normalizeModeName(record?.modeName || "").toLowerCase()}`;
+  const diffKey = String(record?.diffName || "").trim().toLowerCase();
+  const ts = toTimestamp(record?.eventTime) || toTimestamp(record?.startTime) || 0;
+  const duration = toPositiveInt(record?.duration) || 0;
+  const score = toPositiveInt(record?.score) || 0;
+  return `fallback:${ts}|${duration}|${score}|${mapKey}|${modeKey}|${diffKey}`;
+}
+
+function buildLocalRemarkModeKey(record = {}) {
+  return `mode:${normalizeModeName(record?.modeName || "").toLowerCase()}`;
+}
+
+function sanitizeLocalRemarkText(value) {
+  return String(value ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function reindexLocalRemarkMapByTime(records = [], remarks = {}, modeKey = "") {
+  const recordByKey = new Map();
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const key = buildLocalRecordIdentityKey(record);
+    if (!key) return;
+    recordByKey.set(key, record);
+  });
+
+  const groups = new Map();
+  Object.entries(remarks || {}).forEach(([key, value]) => {
+    const text = sanitizeLocalRemarkText(value?.text ?? value);
+    if (!text) return;
+    const record = recordByKey.get(String(key || "").trim());
+    if (!record) return;
+    const mk = buildLocalRemarkModeKey(record);
+    if (modeKey && mk !== modeKey) return;
+    if (!groups.has(mk)) {
+      groups.set(mk, []);
+    }
+    groups.get(mk).push(String(key || "").trim());
+  });
+
+  let changed = 0;
+  groups.forEach((keys) => {
+    keys.sort((a, b) => {
+      const ra = recordByKey.get(a);
+      const rb = recordByKey.get(b);
+      const ta = toTimestamp(ra?.eventTime) || toTimestamp(ra?.startTime) || 0;
+      const tb = toTimestamp(rb?.eventTime) || toTimestamp(rb?.startTime) || 0;
+      if (ta !== tb) return ta - tb;
+      return a.localeCompare(b);
+    });
+    keys.forEach((key, index) => {
+      const current = remarks[key];
+      if (!current || typeof current !== "object") return;
+      const nextNth = index + 1;
+      if (toPositiveInt(current.modeNth) !== nextNth) {
+        remarks[key] = {
+          ...current,
+          modeNth: nextNth
+        };
+        changed += 1;
+      }
+    });
+  });
+  return changed;
+}
+
+function normalizeLocalRemarkMap(raw = {}, records = []) {
+  const validKeys = new Set(
+    (Array.isArray(records) ? records : [])
+      .map((record) => buildLocalRecordIdentityKey(record))
+      .filter(Boolean)
+  );
+  const out = {};
+  if (!raw || typeof raw !== "object") {
+    return out;
+  }
+  Object.entries(raw).forEach(([k, v]) => {
+    const key = String(k || "").trim();
+    if (!key || !validKeys.has(key)) return;
+    if (v && typeof v === "object") {
+      const text = sanitizeLocalRemarkText(v.text);
+      if (!text) return;
+      out[key] = {
+        modeNth: toPositiveInt(v.modeNth || v.modeIndex || v.nth),
+        text,
+        updatedAt: Number(v.updatedAt) || 0
+      };
+      return;
+    }
+    const text = sanitizeLocalRemarkText(v);
+    if (!text) return;
+    out[key] = {
+      modeNth: 0,
+      text,
+      updatedAt: 0
+    };
+  });
+  reindexLocalRemarkMapByTime(records, out);
+  return out;
+}
+
+function predictLocalRemarkNthByTime(records = [], remarks = {}, targetRecord = {}) {
+  const targetKey = buildLocalRecordIdentityKey(targetRecord);
+  if (!targetKey) return 1;
+  const modeKey = buildLocalRemarkModeKey(targetRecord);
+  const keys = [];
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const key = buildLocalRecordIdentityKey(record);
+    if (!key) return;
+    if (buildLocalRemarkModeKey(record) !== modeKey) return;
+    const remark = remarks[key];
+    const text = sanitizeLocalRemarkText(remark?.text ?? "");
+    if (text) {
+      keys.push(key);
+    }
+  });
+  if (!keys.includes(targetKey)) {
+    keys.push(targetKey);
+  }
+  if (!keys.length) return 1;
+  const byKey = new Map();
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const key = buildLocalRecordIdentityKey(record);
+    if (!key) return;
+    byKey.set(key, record);
+  });
+  keys.sort((a, b) => {
+    const ra = byKey.get(a);
+    const rb = byKey.get(b);
+    const ta = toTimestamp(ra?.eventTime) || toTimestamp(ra?.startTime) || 0;
+    const tb = toTimestamp(rb?.eventTime) || toTimestamp(rb?.startTime) || 0;
+    if (ta !== tb) return ta - tb;
+    return a.localeCompare(b);
+  });
+  const index = keys.indexOf(targetKey);
+  return index >= 0 ? index + 1 : 1;
+}
+
 function getConfigRoot(configMapping) {
   if (!configMapping || typeof configMapping !== "object") {
     return {};
@@ -651,6 +809,7 @@ function loadLocalStatsStore() {
     0
   );
   const importCounter = Math.max(toPositiveInt(raw?.importCounter) || 0, maxBatch);
+  const remarks = normalizeLocalRemarkMap(raw?.remarks, records);
 
   return {
     uin: normalizeUin(raw?.uin) || normalizeUin(currentUin) || "",
@@ -658,7 +817,8 @@ function loadLocalStatsStore() {
     updatedAt: Number(raw?.updatedAt) || 0,
     records,
     manual,
-    importCounter
+    importCounter,
+    remarks
   };
 }
 
@@ -670,7 +830,8 @@ function saveLocalStatsStore(store) {
     updatedAt: Number(store?.updatedAt) || Date.now(),
     records: Array.isArray(store?.records) ? store.records : [],
     manual: Array.isArray(store?.manual) ? store.manual : [],
-    importCounter: toPositiveInt(store?.importCounter) || 0
+    importCounter: toPositiveInt(store?.importCounter) || 0,
+    remarks: normalizeLocalRemarkMap(store?.remarks, store?.records)
   });
 }
 
@@ -685,7 +846,8 @@ function ensureLocalStatsStoreFile() {
     updatedAt: Date.now(),
     records: [],
     manual: [],
-    importCounter: 0
+    importCounter: 0,
+    remarks: {}
   });
 }
 
@@ -848,6 +1010,7 @@ function buildLocalMapStatsFromRuntime(configMapping = {}) {
 function buildLocalRecordListFromRuntime(runtimeInput = null) {
   const runtime = runtimeInput && typeof runtimeInput === "object" ? runtimeInput : ensureLocalRuntime();
   const list = Array.isArray(runtime?.store?.records) ? runtime.store.records : [];
+  const remarks = normalizeLocalRemarkMap(runtime?.store?.remarks, list);
   return [...list]
     .filter((item) => {
       const roomId = String(item?.dsRoomId || "").trim();
@@ -858,6 +1021,17 @@ function buildLocalRecordListFromRuntime(runtimeInput = null) {
       return true;
     })
     .map((item) => ({
+      ...(function () {
+        const key = buildLocalRecordIdentityKey(item);
+        const remark = remarks[key];
+        const text = sanitizeLocalRemarkText(remark?.text || "");
+        return {
+          remarkKey: key,
+          remarkText: text,
+          remarkModeNth: text ? toPositiveInt(remark?.modeNth) || 1 : 0,
+          remarkUpdatedAt: Number(remark?.updatedAt) || 0
+        };
+      })(),
       ...item,
       roomID: String(item?.dsRoomId || "").trim(),
       iIsWin: Number(item?.isWin) === 1 ? 1 : 0,
@@ -1150,7 +1324,8 @@ function clearLocalStats() {
       updatedAt: Date.now(),
       records: [],
       manual: [],
-      importCounter: 0
+      importCounter: 0,
+      remarks: {}
     },
     idSet: new Set(),
     aggMap: new Map()
@@ -1655,12 +1830,32 @@ function importLocalStatsFromJsonPayload(payload = {}) {
         : item.sourceType
     }));
   const merged = mergeLocalStats(gameList, latestConfigMapping);
+  const runtime = ensureLocalRuntime();
+  const currentRemarks = normalizeLocalRemarkMap(runtime?.store?.remarks, runtime?.store?.records);
+  const incomingRemarks = normalizeLocalRemarkMap(data?.remarks, runtime?.store?.records);
+  Object.entries(incomingRemarks).forEach(([key, remark]) => {
+    const text = sanitizeLocalRemarkText(remark?.text || "");
+    if (!text) {
+      delete currentRemarks[key];
+      return;
+    }
+    currentRemarks[key] = {
+      modeNth: toPositiveInt(remark?.modeNth) || 0,
+      text,
+      updatedAt: Number(remark?.updatedAt) || Date.now()
+    };
+  });
+  reindexLocalRemarkMapByTime(runtime?.store?.records, currentRemarks);
+  runtime.store.remarks = currentRemarks;
+  runtime.store.updatedAt = Date.now();
+  saveLocalStatsStore(runtime.store);
+  localStatsRuntime = buildRuntimeFromStore(runtime.store);
   return {
     inserted: merged.inserted,
     upgraded: merged.upgraded,
     totalRecords: merged.totalRecords,
-    localMapStats: merged.localMapStats,
-    localRecords: merged.localRecords
+    localMapStats: buildLocalMapStatsFromRuntime(latestConfigMapping),
+    localRecords: buildLocalRecordListFromRuntime(localStatsRuntime)
   };
 }
 
@@ -1681,10 +1876,89 @@ function exportLocalRecordsToJson(filePath) {
     uin: normalizeUin(currentUin) || "",
     exportedAt: Date.now(),
     count: records.length,
-    records
+    records,
+    remarks: normalizeLocalRemarkMap(runtime?.store?.remarks, runtime?.store?.records)
   };
   writeJsonFile(filePath, payload);
   return payload;
+}
+
+function saveLocalBattleRemark(payload = {}) {
+  const roomId = normalizeRoomIdText(
+    pickFirst(payload, ["roomId", "roomID", "dsRoomId", "DsRoomId"], "")
+  );
+  const runtime = ensureLocalRuntime();
+  const records = Array.isArray(runtime?.store?.records) ? runtime.store.records : [];
+  const recordLookup = payload?.lookup && typeof payload.lookup === "object" ? payload.lookup : {};
+  const fallbackIdentityKey = String(payload?.identityKey || "").trim();
+  const findRecordByIdentityKey = (identityKey) => {
+    const key = String(identityKey || "").trim();
+    if (!key) return null;
+    return records.find((item) => buildLocalRecordIdentityKey(item) === key) || null;
+  };
+  const findRecordByRoomId = (normalizedRoomId) => {
+    const target = String(normalizedRoomId || "").trim();
+    if (!target) return null;
+    return (
+      records.find(
+        (item) =>
+          normalizeRoomIdText(
+            pickFirst(
+              item,
+              ["dsRoomId", "DsRoomId", "roomID", "sRoomID", "roomId", "roomid", "iRoomId", "id"],
+              ""
+            )
+          ) === target
+      ) || null
+    );
+  };
+  const lookupIdentityKey = buildLocalRecordIdentityKey({
+    ...recordLookup,
+    dsRoomId: pickFirst(recordLookup, ["dsRoomId", "DsRoomId", "roomID", "roomId", "roomid"], "")
+  });
+  const record =
+    findRecordByRoomId(roomId) ||
+    findRecordByIdentityKey(fallbackIdentityKey) ||
+    findRecordByIdentityKey(lookupIdentityKey);
+  if (!record) {
+    throw new Error("未找到对应本地战绩，无法备注");
+  }
+
+  const key = buildLocalRecordIdentityKey(record);
+  if (!key) {
+    throw new Error("该战绩缺少唯一标识，无法备注");
+  }
+  const cleanText = sanitizeLocalRemarkText(payload?.text);
+  const remarks = normalizeLocalRemarkMap(runtime?.store?.remarks, records);
+  if (!cleanText) {
+    delete remarks[key];
+  } else {
+    const nth = predictLocalRemarkNthByTime(records, remarks, record);
+    remarks[key] = {
+      modeNth: nth < 1 ? 1 : nth,
+      text: cleanText,
+      updatedAt: Date.now()
+    };
+  }
+  reindexLocalRemarkMapByTime(records, remarks, buildLocalRemarkModeKey(record));
+
+  runtime.store.remarks = remarks;
+  runtime.store.updatedAt = Date.now();
+  saveLocalStatsStore(runtime.store);
+  localStatsRuntime = buildRuntimeFromStore(runtime.store);
+
+  const currentRemark = remarks[key] || null;
+  return {
+    localMapStats: buildLocalMapStatsFromRuntime(latestConfigMapping),
+    localRecords: buildLocalRecordListFromRuntime(localStatsRuntime),
+    remark: currentRemark
+      ? {
+          modeNth: toPositiveInt(currentRemark.modeNth) || 1,
+          text: sanitizeLocalRemarkText(currentRemark.text),
+          updatedAt: Number(currentRemark.updatedAt) || 0
+        }
+      : null
+  };
 }
 
 function extractTokenFromCookie(cookie) {
@@ -2611,6 +2885,22 @@ ipcMain.handle("local:get-stats", () => {
       }
     }
   };
+});
+
+ipcMain.handle("local:save-remark", (_, payload) => {
+  try {
+    const saved = saveLocalBattleRemark(payload);
+    return {
+      success: true,
+      message: sanitizeLocalRemarkText(payload?.text) ? "备注已保存" : "备注已清除",
+      data: saved
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error?.message || "备注保存失败"
+    };
+  }
 });
 
 ipcMain.handle("local:refresh-by-roomid", async () => {

@@ -731,6 +731,31 @@ button.ghost.danger.danger-critical:disabled {
   font-size: 16px;
 }
 
+.history-remark-meta {
+  margin-top: 4px;
+  color: #8ea9ca;
+  font-size: 13px;
+}
+
+.history-remark-text {
+  margin-top: 2px;
+  color: #31d59a;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.history-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.remark-inline-btn {
+  border-color: rgba(94, 206, 160, 0.45);
+  background: rgba(19, 57, 47, 0.55);
+}
+
 .expand-btn {
   margin-top: 8px;
   background: rgba(15, 28, 47, 0.72);
@@ -826,6 +851,74 @@ button.ghost.danger.danger-critical:disabled {
   font-size: 16px;
   font-weight: 700;
   color: #e7f2ff;
+}
+
+.history-drawer-hunting-summary {
+  margin-bottom: 10px;
+}
+
+.history-drawer-hunting-player {
+  border: 1px solid rgba(123, 150, 189, 0.22);
+  border-radius: 8px;
+  background: rgba(11, 20, 34, 0.72);
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.history-drawer-hunting-player:last-child {
+  margin-bottom: 0;
+}
+
+.history-drawer-hunting-player-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e7f2ff;
+  margin-bottom: 8px;
+}
+
+.history-drawer-partition-list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+
+.history-drawer-partition-wrap {
+  margin-top: 4px;
+}
+
+.history-drawer-partition-title {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.history-drawer-partition-card {
+  display: grid;
+  gap: 8px;
+  flex: 0 0 220px;
+  border: 1px solid rgba(123, 150, 189, 0.22);
+  border-radius: 6px;
+  background: rgba(8, 15, 27, 0.78);
+  padding: 10px 8px;
+}
+
+.history-drawer-partition-area {
+  font-size: 16px;
+  color: #24d98a;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.history-drawer-partition-time {
+  font-size: 16px;
+  line-height: 1.05;
+  font-weight: 700;
+  color: #e7f2ff;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .history-drawer-equipment-section {
@@ -930,6 +1023,10 @@ button.ghost.danger.danger-critical:disabled {
   .history-drawer-metrics,
   .history-drawer-equip-list {
     grid-template-columns: 1fr;
+  }
+
+  .history-drawer-partition-time {
+    font-size: 16px;
   }
 }
 

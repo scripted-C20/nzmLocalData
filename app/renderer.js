@@ -36,7 +36,8 @@ const state = {
   localBattleFilters: {
     mode: "all",
     difficulty: "all",
-    mapKey: "all"
+    mapKey: "all",
+    remark: "all"
   },
   latestNotice: null,
   noticeAutoShownHash: "",
@@ -85,6 +86,20 @@ function parseDateTimeToMs(value) {
   const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
   const ms = Date.parse(normalized);
   return Number.isFinite(ms) ? ms : 0;
+}
+
+function normalizeLocalRoomId(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^0-9A-Za-z_-]/g, "")
+    .toLowerCase();
+}
+
+function getLocalBattleEventMs(game) {
+  return (
+    parseDateTimeToMs(pick(game, ["dtEventTime", "eventTime"], "")) ||
+    parseDateTimeToMs(pick(game, ["dtGameStartTime", "startTime"], ""))
+  );
 }
 
 function resolveLocalBattleDurationSeconds(game) {
@@ -862,7 +877,8 @@ function renderLocalBattleFilterOptions() {
   const modeSelect = byId("local-battle-mode-select");
   const diffSelect = byId("local-battle-diff-select");
   const mapSelect = byId("local-battle-map-select");
-  if (!modeSelect || !diffSelect || !mapSelect) {
+  const remarkSelect = byId("local-battle-remark-select");
+  if (!modeSelect || !diffSelect || !mapSelect || !remarkSelect) {
     return;
   }
 
@@ -958,6 +974,19 @@ function renderLocalBattleFilterOptions() {
   modeSelect.value = state.localBattleFilters.mode;
   diffSelect.value = state.localBattleFilters.difficulty;
   mapSelect.value = state.localBattleFilters.mapKey;
+
+  const remarkOptions = ["all", "has", "none"];
+  remarkSelect.innerHTML = "";
+  remarkOptions.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "all" ? "全部备注" : value === "has" ? "有备注" : "无备注";
+    remarkSelect.appendChild(option);
+  });
+  state.localBattleFilters.remark = remarkOptions.includes(state.localBattleFilters.remark)
+    ? state.localBattleFilters.remark
+    : "all";
+  remarkSelect.value = state.localBattleFilters.remark;
 }
 
 function isOnlyHuntDifficulties(configMapping = null) {
@@ -1220,50 +1249,6 @@ function getOfficialSummary() {
   );
 }
 
-function getBossDamage(game) {
-  const direct = pick(
-    game,
-    [
-      "iBossDamage",
-      "bossDamage",
-      "iBossHurt",
-      "bossHurt",
-      "iBossDmg",
-      "iDamage",
-      "damage",
-      "iHurt",
-      "hurt",
-      "totalDamage"
-    ],
-    0
-  );
-  if (toNumber(direct) > 0) {
-    return toNumber(direct);
-  }
-
-  const dynamic = Object.entries(game || {}).find(([key, value]) => {
-    const low = key.toLowerCase();
-    if (low.includes("boss") && (low.includes("damage") || low.includes("hurt") || low.includes("dmg"))) {
-      return toNumber(value) > 0;
-    }
-    if ((low.includes("damage") || low.includes("hurt") || low.includes("dmg")) && toNumber(value) > 0) {
-      return true;
-    }
-    return false;
-  });
-
-  if (dynamic) {
-    return toNumber(dynamic[1]);
-  }
-
-  const score = toNumber(pick(game, ["iScore", "score"], 0));
-  if (score > 0) {
-    return Math.floor(score / 10);
-  }
-
-  return 0;
-}
-
 function getModeGroup(modeName) {
   if (modeName.includes("塔防")) return "tower";
   if (modeName.includes("机甲") || modeName.includes("排位")) return "mecha";
@@ -1343,16 +1328,10 @@ function renderRecentCards() {
     recent.reduce((sum, item) => sum + toNumber(pick(item, ["iScore", "score"])), 0) /
       Math.max(1, recent.length);
 
-  const recent10 = recent.slice(0, 10);
-  const bossSamples = recent10.map((item) => getBossDamage(item)).filter((x) => x > 0);
-  const bossAvg =
-    bossSamples.reduce((sum, item) => sum + item, 0) / Math.max(1, bossSamples.length);
-
   const cards = [
     { label: "近期场次", value: formatNumber(totalGames) },
     { label: "近期通关率", value: formatPercent(winRate) },
-    { label: "场均综合评分", value: formatNumber(Math.floor(avgScore)) },
-    { label: "场均BOSS伤害(近10场)", value: formatNumber(Math.floor(bossAvg)) }
+    { label: "场均综合评分", value: formatNumber(Math.floor(avgScore)) }
   ];
 
   cards.forEach((item) => {
@@ -1675,7 +1654,13 @@ function renderLocalMapCards() {
   }
 
   if (state.localOnlyWithData) {
-    list = list.filter((item) => toNumber(item?.total) > 0 || toNumber(item?.importTotal) > 0);
+    list = list.filter((item) => {
+      return (
+        toNumber(item?.localTotal) > 0 ||
+        toNumber(item?.importTotal) > 0 ||
+        toNumber(item?.total) > 0
+      );
+    });
   }
 
   if (!list.length) {
@@ -2102,6 +2087,27 @@ function getRoomId(game) {
   ).trim();
 }
 
+function buildLocalRemarkLookup(game) {
+  const roomId = getRoomId(game);
+  const mapId = toNumber(pick(game, ["iMapId", "mapId"], 0));
+  const score = toNumber(pick(game, ["iScore", "score"], 0));
+  const duration = resolveLocalBattleDurationSeconds(game);
+  const eventTime = String(pick(game, ["dtEventTime", "eventTime"], "")).trim();
+  const startTime = String(pick(game, ["dtGameStartTime", "startTime"], "")).trim();
+  return {
+    roomId,
+    dsRoomId: roomId,
+    mapId,
+    mapName: inferMapName(game),
+    modeName: inferModeName(game),
+    diffName: inferDifficultyName(game),
+    eventTime,
+    startTime,
+    duration,
+    score
+  };
+}
+
 function getFilteredHistoryGames() {
   const allGames = Array.isArray(state.historyRemote.list) ? state.historyRemote.list : [];
   const diffFilter = state.historyFilters.difficulty;
@@ -2273,6 +2279,7 @@ function getFilteredLocalBattleGames() {
   const modeFilter = String(state.localBattleFilters.mode || "all").trim();
   const diffFilter = String(state.localBattleFilters.difficulty || "all").trim();
   const mapKeyFilter = String(state.localBattleFilters.mapKey || "all").trim();
+  const remarkFilter = String(state.localBattleFilters.remark || "all").trim();
 
   return allGames.filter((game) => {
     const mode = inferModeName(game);
@@ -2289,8 +2296,45 @@ function getFilteredLocalBattleGames() {
         return false;
       }
     }
+    const hasRemark = String(pick(game, ["remarkText", "remark", "note"], "")).trim().length > 0;
+    if (remarkFilter === "has" && !hasRemark) {
+      return false;
+    }
+    if (remarkFilter === "none" && hasRemark) {
+      return false;
+    }
     return true;
   });
+}
+
+function predictLocalRemarkNthForGame(game) {
+  const targetRoom = normalizeLocalRoomId(getRoomId(game));
+  if (!targetRoom) return 1;
+  const targetMode = normalizeModeName(inferModeName(game));
+  const keys = [];
+  const allGames = getLocalBattleAllGames();
+  allGames.forEach((item) => {
+    if (normalizeModeName(inferModeName(item)) !== targetMode) return;
+    const room = normalizeLocalRoomId(getRoomId(item));
+    if (!room) return;
+    const text = String(pick(item, ["remarkText", "remark", "note"], "")).trim();
+    if (text) {
+      keys.push(room);
+    }
+  });
+  if (!keys.includes(targetRoom)) {
+    keys.push(targetRoom);
+  }
+  keys.sort((a, b) => {
+    const ga = allGames.find((x) => normalizeLocalRoomId(getRoomId(x)) === a);
+    const gb = allGames.find((x) => normalizeLocalRoomId(getRoomId(x)) === b);
+    const ta = getLocalBattleEventMs(ga);
+    const tb = getLocalBattleEventMs(gb);
+    if (ta !== tb) return ta - tb;
+    return a.localeCompare(b);
+  });
+  const index = keys.indexOf(targetRoom);
+  return index >= 0 ? index + 1 : 1;
 }
 
 function getLocalBattlePageCount(totalCount) {
@@ -2324,16 +2368,9 @@ function renderLocalBattleList() {
 
   renderLocalBattleFilterOptions();
 
-  const parseEventTime = (game) => {
-    const raw = String(
-      pick(game, ["dtEventTime", "eventTime", "dtGameStartTime", "startTime"], "")
-    ).trim();
-    if (!raw) return 0;
-    const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-    const ts = Date.parse(normalized);
-    return Number.isFinite(ts) ? ts : 0;
-  };
-  const filtered = getFilteredLocalBattleGames().sort((a, b) => parseEventTime(b) - parseEventTime(a));
+  const filtered = getFilteredLocalBattleGames().sort(
+    (a, b) => getLocalBattleEventMs(b) - getLocalBattleEventMs(a)
+  );
   const pageCount = getLocalBattlePageCount(filtered.length);
   state.localBattlePage = Math.min(Math.max(1, state.localBattlePage), pageCount);
   const start = (state.localBattlePage - 1) * LOCAL_BATTLE_PAGE_SIZE;
@@ -2397,13 +2434,38 @@ function renderLocalBattleList() {
     meta.textContent = `${map} | ${diff} | ${timeText} | ${duration}`;
     row.append(top, meta);
 
+    const remarkText = String(pick(game, ["remarkText", "remark", "note"], "")).trim();
+    const remarkNth = toNumber(pick(game, ["remarkModeNth", "remarkNth"], 0));
+    if (remarkText) {
+      const nthLine = document.createElement("div");
+      nthLine.className = "history-remark-meta";
+      nthLine.textContent = `这个模式第 ${formatNumber(Math.max(1, remarkNth || 1))} 次备注`;
+      const remarkLine = document.createElement("div");
+      remarkLine.className = "history-remark-text";
+      remarkLine.textContent = `备注内容：${remarkText}`;
+      row.append(nthLine, remarkLine);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const remarkBtn = document.createElement("button");
+    remarkBtn.className = "expand-btn remark-inline-btn";
+    remarkBtn.textContent = "备注";
+    remarkBtn.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await onLocalBattleRemarkClick(game);
+    });
+    actions.appendChild(remarkBtn);
+
     if (roomId) {
       const expand = document.createElement("button");
       expand.className = "expand-btn";
       expand.textContent = "展开详细数据";
       expand.dataset.roomId = roomId;
-      row.appendChild(expand);
+      actions.appendChild(expand);
     }
+    row.appendChild(actions);
 
     container.appendChild(row);
   });
@@ -2625,6 +2687,7 @@ async function onClearToken() {
   state.localBattleFilters.mode = "all";
   state.localBattleFilters.difficulty = "all";
   state.localBattleFilters.mapKey = "all";
+  state.localBattleFilters.remark = "all";
   state.historyRemote = {
     list: [],
     page: 1,
@@ -2636,6 +2699,159 @@ async function onClearToken() {
   };
   renderAllPanels();
   setStatus("已清空本地 token", true);
+}
+
+async function onLocalBattleRemarkClick(game) {
+  const roomId = getRoomId(game);
+  const lookup = buildLocalRemarkLookup(game);
+  const identityKey = roomId
+    ? `room:${normalizeLocalRoomId(roomId)}`
+    : "";
+  if (!roomId && !lookup.eventTime && !lookup.startTime) {
+    setStatus("该记录缺少唯一标识，无法备注", false);
+    return;
+  }
+  const currentText = String(pick(game, ["remarkText", "remark", "note"], "")).trim();
+  const currentNth = Math.max(
+    1,
+    toNumber(pick(game, ["remarkModeNth", "remarkNth"], 0)) || predictLocalRemarkNthForGame(game)
+  );
+  const nextText = await openLocalRemarkEditor({
+    nth: currentNth,
+    value: currentText
+  });
+  if (nextText === null) {
+    return;
+  }
+  try {
+    setLoading(true, "正在保存备注...");
+    const result = await window.nzmApi.saveLocalBattleRemark({
+      roomId,
+      identityKey,
+      lookup,
+      text: nextText
+    });
+    if (!result?.success) {
+      throw new Error(result?.message || "备注保存失败");
+    }
+    state.localStats = {
+      localMapStats: result?.data?.localMapStats || state.localStats?.localMapStats || null,
+      localRecords: Array.isArray(result?.data?.localRecords)
+        ? result.data.localRecords
+        : Array.isArray(state.localStats?.localRecords)
+          ? state.localStats.localRecords
+          : [],
+      localStatsMeta: state.localStats?.localStatsMeta || null
+    };
+    renderLocalBattleList();
+    renderLocalMapCards();
+    setStatus(result?.message || (String(nextText || "").trim() ? "备注已保存" : "备注已清除"), true);
+  } catch (error) {
+    setStatus(`备注保存失败: ${error.message}`, false);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function openLocalRemarkEditor({ nth = 1, value = "" } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "notice-modal";
+
+    const dialog = document.createElement("div");
+    dialog.className = "notice-dialog";
+    dialog.style.maxWidth = "560px";
+
+    const header = document.createElement("div");
+    header.className = "notice-header";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "notice-title";
+    title.textContent = "编辑备注";
+    const meta = document.createElement("div");
+    meta.className = "notice-meta";
+    meta.textContent = `自动计算：这个模式第 ${formatNumber(Math.max(1, nth || 1))} 次备注`;
+    titleWrap.append(title, meta);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "ghost";
+    closeBtn.textContent = "取消";
+    header.append(titleWrap, closeBtn);
+
+    const body = document.createElement("div");
+    body.className = "notice-body";
+    body.style.display = "grid";
+    body.style.gap = "8px";
+
+    const hint = document.createElement("div");
+    hint.className = "notice-meta";
+    hint.textContent = "备注内容（纯文本，留空可清除）";
+
+    const input = document.createElement("textarea");
+    input.value = String(value || "");
+    input.maxLength = 120;
+    input.rows = 3;
+    input.style.width = "100%";
+    input.style.resize = "vertical";
+    input.style.boxSizing = "border-box";
+    input.style.background = "rgba(8, 18, 32, 0.8)";
+    input.style.color = "#e9f4ff";
+    input.style.border = "1px solid rgba(123, 193, 255, 0.32)";
+    input.style.borderRadius = "8px";
+    input.style.padding = "10px";
+    input.style.outline = "none";
+
+    body.append(hint, input);
+
+    const actions = document.createElement("div");
+    actions.className = "session-actions qiniu-actions";
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "ghost";
+    clearBtn.textContent = "清空";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "保存";
+
+    actions.append(clearBtn, saveBtn);
+    dialog.append(header, body, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    input.focus();
+    input.select();
+
+    const cleanup = () => {
+      if (overlay.parentNode) {
+        overlay.parentNode.removeChild(overlay);
+      }
+      document.removeEventListener("keydown", onKeydown, true);
+    };
+
+    const done = (result) => {
+      cleanup();
+      resolve(result);
+    };
+
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        done(null);
+      }
+    };
+
+    document.addEventListener("keydown", onKeydown, true);
+    closeBtn.addEventListener("click", () => done(null));
+    clearBtn.addEventListener("click", () => done(""));
+    saveBtn.addEventListener("click", () => done(input.value || ""));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        done(null);
+      }
+    });
+  });
 }
 
 async function onLocalClear() {
@@ -2908,6 +3124,205 @@ function toDisplayNumber(value) {
   return formatNumber(num);
 }
 
+function parseMaybeJson(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const text = value.trim();
+  if (!text) {
+    return value;
+  }
+  const first = text[0];
+  const last = text[text.length - 1];
+  const maybeJson =
+    (first === "{" && last === "}") ||
+    (first === "[" && last === "]");
+  if (!maybeJson) {
+    return value;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return value;
+  }
+}
+
+function toObjectSafe(value) {
+  const parsed = parseMaybeJson(value);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return parsed;
+  }
+  return {};
+}
+
+function toArraySafe(value) {
+  const parsed = parseMaybeJson(value);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function toPartitionList(value) {
+  const parsed = parseMaybeJson(value);
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (parsed && typeof parsed === "object") {
+    return Object.entries(parsed).map(([key, node]) => {
+      if (node && typeof node === "object" && !Array.isArray(node)) {
+        const obj = { ...node };
+        const areaId = String(pick(obj, ["areaId", "iAreaId", "id"], key)).trim();
+        return { ...obj, areaId };
+      }
+      return {
+        areaId: String(key || "").trim(),
+        areaName: String(node || "").trim()
+      };
+    });
+  }
+  return [];
+}
+
+function buildPartitionAreaMapFromConfig(configMapping = null) {
+  const root = getConfigRootByMapping(configMapping);
+  const source = pick(
+    root,
+    [
+      "huntingFieldPartitionArea",
+      "huntingFielartitionArea",
+      "huntingPartitionArea",
+      "partitionArea"
+    ],
+    {}
+  );
+  const map = new Map();
+  toPartitionList(source).forEach((item, index) => {
+    const node = toObjectSafe(item);
+    const areaId = String(
+      pick(node, ["areaId", "iAreaId", "id"], String(index + 1))
+    ).trim();
+    if (!areaId) {
+      return;
+    }
+    const areaName = decodeText(
+      String(
+        pick(node, ["areaName", "name", "partitionName", "displayName", "label"], "") ||
+          `区域${areaId}`
+      ).trim()
+    );
+    map.set(areaId, areaName);
+  });
+  return map;
+}
+
+function mergePartitionAreaMap(target, source) {
+  const parsed = parseMaybeJson(source);
+  if (!parsed || typeof parsed !== "object") {
+    return;
+  }
+  Object.entries(parsed).forEach(([id, node]) => {
+    const areaId = String(id || "").trim();
+    if (!areaId || target.has(areaId)) {
+      return;
+    }
+    if (typeof node === "string") {
+      const text = decodeText(node);
+      target.set(areaId, text || `区域${areaId}`);
+      return;
+    }
+    if (node && typeof node === "object" && !Array.isArray(node)) {
+      const areaName = decodeText(
+        String(pick(node, ["areaName", "name", "partitionName", "displayName", "label"], "")).trim()
+      );
+      target.set(areaId, areaName || `区域${areaId}`);
+    }
+  });
+}
+
+function getDetailPartitionAreaMap(payload = {}) {
+  const map = new Map();
+  mergePartitionAreaMap(map, payload?.partitionAreaMap);
+  [payload?.configMapping, state.historyRemote?.configMapping, getStatsPayload()?.configMapping].forEach(
+    (configMapping) => {
+      buildPartitionAreaMapFromConfig(configMapping).forEach((name, id) => {
+        if (!map.has(id)) {
+          map.set(id, name);
+        }
+      });
+    }
+  );
+  return map;
+}
+
+function normalizePartitionDetails(rawPartitionDetails, partitionAreaMap) {
+  return toPartitionList(rawPartitionDetails)
+    .map((entry, index) => {
+      const node = toObjectSafe(entry);
+      const areaId = String(pick(node, ["areaId", "iAreaId", "id", "partitionId"], "")).trim();
+      const areaName = decodeText(
+        String(
+          pick(node, ["areaName", "name", "partitionName", "displayName", "label"], "") ||
+            (areaId ? partitionAreaMap.get(areaId) : "") ||
+            `区域${index + 1}`
+        ).trim()
+      );
+      const usedTime = pick(node, ["usedTime", "time", "duration", "stayTime"], "");
+      return {
+        ...node,
+        areaId,
+        areaName,
+        usedTime,
+        totalCoin: pick(node, ["totalCoin", "coin", "totalCoins"], ""),
+        damageTotalOnBoss: pick(node, ["damageTotalOnBoss", "bossDamage", "damageBoss"], ""),
+        damageTotalOnMobs: pick(node, ["damageTotalOnMobs", "mobsDamage", "damageMobs"], "")
+      };
+    })
+    .filter((item) => {
+      return (
+        Boolean(item.areaName) ||
+        toNumber(item.usedTime) > 0 ||
+        toNumber(item.totalCoin) > 0 ||
+        toNumber(item.damageTotalOnBoss) > 0 ||
+        toNumber(item.damageTotalOnMobs) > 0
+      );
+    });
+}
+
+function normalizeHuntingDetails(rawHuntingDetails, partitionAreaMap) {
+  const huntingDetails = toObjectSafe(rawHuntingDetails);
+  const partitionSource = pick(
+    huntingDetails,
+    ["partitionDetails", "partitionList", "partitions", "areaDetails"],
+    []
+  );
+  return {
+    ...huntingDetails,
+    totalCoin: pick(huntingDetails, ["totalCoin", "coin", "totalCoins"], ""),
+    damageTotalOnBoss: pick(huntingDetails, ["damageTotalOnBoss", "bossDamage", "damageBoss"], ""),
+    damageTotalOnMobs: pick(huntingDetails, ["damageTotalOnMobs", "mobsDamage", "damageMobs"], ""),
+    partitionDetails: normalizePartitionDetails(partitionSource, partitionAreaMap)
+  };
+}
+
+function resolvePlayerHuntingDetails(player, partitionAreaMap) {
+  const candidate = pick(
+    player,
+    ["huntingDetails", "huntingDetail", "huntingData"],
+    {}
+  );
+  return normalizeHuntingDetails(candidate, partitionAreaMap);
+}
+
+function normalizeDetailPlayers(payload = {}, partitionAreaMap = new Map()) {
+  const list = Array.isArray(payload?.list) ? payload.list : [];
+  return list.map((entry) => {
+    const item = toObjectSafe(entry);
+    return {
+      ...item,
+      huntingDetails: resolvePlayerHuntingDetails(item, partitionAreaMap),
+      equipmentScheme: toArraySafe(item?.equipmentScheme)
+    };
+  });
+}
+
 function createHuntingMetricsGrid(huntingDetails) {
   const grid = document.createElement("div");
   grid.className = "history-drawer-metrics";
@@ -2939,6 +3354,153 @@ function createHuntingMetricsGrid(huntingDetails) {
     grid.appendChild(cell);
   });
   return grid;
+}
+
+function createPlayerMetricsGrid(player) {
+  const grid = document.createElement("div");
+  grid.className = "history-drawer-metrics";
+
+  const base = toObjectSafe(player?.baseDetail);
+  const hunting = toObjectSafe(player?.huntingDetails);
+  const metrics = [
+    {
+      label: "积分",
+      value: pick(player, ["iScore", "score", "battleScore"], pick(base, ["iScore", "score", "battleScore"], ""))
+    },
+    {
+      label: "击杀",
+      value: pick(
+        player,
+        ["iKills", "iKillNum", "killNum", "kills", "kill"],
+        pick(base, ["iKills", "iKillNum", "killNum", "kills", "kill"], "")
+      )
+    },
+    {
+      label: "死亡",
+      value: pick(
+        player,
+        ["iDeaths", "iDeadNum", "deadNum", "deaths", "death", "dieCount"],
+        pick(base, ["iDeaths", "iDeadNum", "deadNum", "deaths", "death", "dieCount"], "")
+      )
+    },
+    {
+      label: "Boss伤害",
+      value: pick(
+        hunting,
+        ["damageTotalOnBoss", "bossDamage", "damageBoss"],
+        pick(base, ["iBossDamage", "bossDamage", "damageBoss", "iDamage", "iTotalDamage"], "")
+      )
+    },
+    {
+      label: "小怪伤害",
+      value: pick(hunting, ["damageTotalOnMobs", "mobsDamage", "damageMobs"], pick(base, ["iMobsDamage"], ""))
+    },
+    {
+      label: "金币",
+      value: pick(hunting, ["totalCoin", "coin", "totalCoins"], pick(base, ["iCoin", "coin", "totalCoin"], ""))
+    }
+  ];
+
+  metrics.forEach((item) => {
+    const cell = document.createElement("div");
+    cell.className = "history-drawer-metric-card";
+    const label = document.createElement("div");
+    label.className = "history-drawer-metric-label";
+    label.textContent = item.label;
+    const value = document.createElement("div");
+    value.className = "history-drawer-metric-value";
+    value.textContent = toDisplayNumber(item.value);
+    cell.append(label, value);
+    grid.appendChild(cell);
+  });
+  return grid;
+}
+
+function createPartitionDetailList(partitionDetails) {
+  if (!Array.isArray(partitionDetails) || !partitionDetails.length) {
+    return null;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "history-drawer-partition-wrap";
+
+  const title = document.createElement("div");
+  title.className = "history-drawer-partition-title";
+  title.textContent = "区域用时";
+  wrapper.appendChild(title);
+
+  const box = document.createElement("div");
+  box.className = "history-drawer-partition-list";
+  partitionDetails.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "history-drawer-partition-card";
+
+    const area = document.createElement("span");
+    area.className = "history-drawer-partition-area";
+    area.textContent = item.areaName || "未命名区域";
+
+    const timeValue = document.createElement("span");
+    timeValue.className = "history-drawer-partition-time";
+    timeValue.textContent = formatDuration(item.usedTime);
+
+    card.append(area, timeValue);
+    box.appendChild(card);
+  });
+  wrapper.appendChild(box);
+  return wrapper;
+}
+
+function createHuntingSummarySection(players) {
+  const section = document.createElement("div");
+  section.className = "history-drawer-hunting-summary";
+
+  const title = document.createElement("div");
+  title.className = "history-drawer-section-title";
+  title.textContent = "狩猎详情";
+  section.appendChild(title);
+
+  const huntingList = Array.isArray(players)
+    ? players
+        .map((item) => item?.huntingDetails || {})
+        .filter((item) => item && typeof item === "object")
+    : [];
+  const primary =
+    huntingList.find((item) => Array.isArray(item?.partitionDetails) && item.partitionDetails.length) ||
+    huntingList.find((item) => {
+      return (
+        toNumber(item?.totalCoin) > 0 ||
+        toNumber(item?.damageTotalOnBoss) > 0 ||
+        toNumber(item?.damageTotalOnMobs) > 0
+      );
+    }) ||
+    {};
+
+  const partitionDetails = Array.isArray(primary?.partitionDetails)
+    ? primary.partitionDetails
+    : [];
+  const hasMetric =
+    toNumber(primary?.totalCoin) > 0 ||
+    toNumber(primary?.damageTotalOnBoss) > 0 ||
+    toNumber(primary?.damageTotalOnMobs) > 0;
+
+  if (!partitionDetails.length && !hasMetric) {
+    const empty = document.createElement("div");
+    empty.className = "history-drawer-empty";
+    empty.textContent = "无狩猎详情数据";
+    section.appendChild(empty);
+    return section;
+  }
+
+  const block = document.createElement("div");
+  block.className = "history-drawer-hunting-player";
+  const partitionList = createPartitionDetailList(partitionDetails);
+  if (partitionList) {
+    block.appendChild(partitionList);
+  } else {
+    block.appendChild(createHuntingMetricsGrid(primary));
+  }
+  section.appendChild(block);
+
+  return section;
 }
 
 function createCommonItemsRow(items) {
@@ -3029,6 +3591,19 @@ function createEquipmentSection(equipmentScheme) {
 }
 
 function normalizeDetailResult(detailResult) {
+  const resolvePayload = (value) => {
+    if (!value || typeof value !== "object") {
+      return {};
+    }
+    if (Array.isArray(value?.list)) {
+      return value;
+    }
+    if (value?.data && typeof value.data === "object" && Array.isArray(value.data?.list)) {
+      return value.data;
+    }
+    return value;
+  };
+
   if (!detailResult || typeof detailResult !== "object") {
     return { success: false, message: "空数据", payload: {} };
   }
@@ -3036,13 +3611,13 @@ function normalizeDetailResult(detailResult) {
     return {
       success: false,
       message: detailResult.message || "详情接口返回失败",
-      payload: detailResult.data && typeof detailResult.data === "object" ? detailResult.data : {}
+      payload: resolvePayload(detailResult.data)
     };
   }
   return {
     success: true,
     message: "",
-    payload: detailResult.data && typeof detailResult.data === "object" ? detailResult.data : {}
+    payload: resolvePayload(detailResult.data)
   };
 }
 
@@ -3052,7 +3627,8 @@ function createHistoryDetailDrawer(roomId, detailResult) {
 
   const summary = normalizeDetailResult(detailResult);
   const payload = summary.payload || {};
-  const list = Array.isArray(payload.list) ? payload.list : [];
+  const partitionAreaMap = getDetailPartitionAreaMap(payload);
+  const list = normalizeDetailPlayers(payload, partitionAreaMap);
 
   const head = document.createElement("div");
   head.className = "history-drawer-head";
@@ -3073,6 +3649,8 @@ function createHistoryDetailDrawer(roomId, detailResult) {
     empty.textContent = "该对局无玩家详情数据";
     drawer.appendChild(empty);
   } else {
+    drawer.appendChild(createHuntingSummarySection(list));
+
     const players = document.createElement("div");
     players.className = "history-drawer-player-list";
 
@@ -3099,7 +3677,7 @@ function createHistoryDetailDrawer(roomId, detailResult) {
       header.appendChild(title);
       card.appendChild(header);
 
-      card.appendChild(createHuntingMetricsGrid(item?.huntingDetails || {}));
+      card.appendChild(createPlayerMetricsGrid(item || {}));
       card.appendChild(createEquipmentSection(item?.equipmentScheme || []));
       players.appendChild(card);
     });
@@ -3184,6 +3762,7 @@ function bindEvents() {
         state.localBattleFilters.mode = "all";
         state.localBattleFilters.difficulty = "all";
         state.localBattleFilters.mapKey = "all";
+        state.localBattleFilters.remark = "all";
         state.historyRemote = {
           list: [],
           page: 1,
@@ -3350,6 +3929,11 @@ function bindEvents() {
     state.localBattlePage = 1;
     renderLocalBattleList();
   });
+  byId("local-battle-remark-select").addEventListener("change", (event) => {
+    state.localBattleFilters.remark = String(event.target.value || "all").trim() || "all";
+    state.localBattlePage = 1;
+    renderLocalBattleList();
+  });
 
   byId("log-window-toggle").addEventListener("change", async (event) => {
     const nextVisible = Boolean(event.target.checked);
@@ -3404,8 +3988,7 @@ async function loadInitialConfig() {
     }
     const localToggle = byId("local-only-data-toggle");
     if (localToggle) {
-      localToggle.checked = true;
-      state.localOnlyWithData = true;
+      localToggle.checked = Boolean(state.localOnlyWithData);
     }
     setLogToggle(Boolean(config?.data?.logWindowVisible));
 
