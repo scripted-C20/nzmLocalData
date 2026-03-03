@@ -371,6 +371,137 @@ function sanitizeLocalRemarkText(value) {
     .trim();
 }
 
+function normalizeLocalRemarkValue(value) {
+  if (value && typeof value === "object") {
+    const text = sanitizeLocalRemarkText(
+      pickFirst(value, ["text", "remarkText", "remark", "note"], "")
+    );
+    if (!text) {
+      return null;
+    }
+    return {
+      modeNth: toPositiveInt(value.modeNth || value.modeIndex || value.nth) || 0,
+      text,
+      updatedAt: Number(value.updatedAt) || 0
+    };
+  }
+  const text = sanitizeLocalRemarkText(value);
+  if (!text) {
+    return null;
+  }
+  return {
+    modeNth: 0,
+    text,
+    updatedAt: 0
+  };
+}
+
+function extractLocalRemarkFromRecord(record = {}) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const nestedRemark = record?.remark && typeof record.remark === "object" ? record.remark : {};
+  const textCandidates = [
+    record?.remarkText,
+    typeof record?.remark === "string" ? record.remark : "",
+    record?.note,
+    nestedRemark?.text,
+    nestedRemark?.remarkText,
+    nestedRemark?.note
+  ];
+  let text = "";
+  for (const candidate of textCandidates) {
+    const cleaned = sanitizeLocalRemarkText(candidate);
+    if (cleaned) {
+      text = cleaned;
+      break;
+    }
+  }
+  if (!text) {
+    return null;
+  }
+  return {
+    modeNth: toPositiveInt(
+      record?.remarkModeNth ||
+        record?.remarkNth ||
+        record?.modeNth ||
+        nestedRemark?.modeNth ||
+        nestedRemark?.modeIndex ||
+        nestedRemark?.nth ||
+        0
+    ),
+    text,
+    updatedAt: Number(record?.remarkUpdatedAt || nestedRemark?.updatedAt || 0) || 0
+  };
+}
+
+function applyLocalRemarkToRecord(record = {}, remarkInput = null) {
+  if (!record || typeof record !== "object") {
+    return;
+  }
+  const remark = normalizeLocalRemarkValue(remarkInput);
+  if (!remark) {
+    record.remarkText = "";
+    record.remarkModeNth = 0;
+    record.remarkUpdatedAt = 0;
+    delete record.remark;
+    delete record.remarkNth;
+    return;
+  }
+  const modeNth = toPositiveInt(remark.modeNth) || 0;
+  const updatedAt = Number(remark.updatedAt) || 0;
+  record.remarkText = remark.text;
+  record.remarkModeNth = modeNth;
+  record.remarkUpdatedAt = updatedAt;
+  delete record.remark;
+  delete record.remarkNth;
+}
+
+function pickPreferredLocalRemark(currentInput, candidateInput) {
+  const current = normalizeLocalRemarkValue(currentInput);
+  const candidate = normalizeLocalRemarkValue(candidateInput);
+  if (!candidate) {
+    return current;
+  }
+  if (!current) {
+    return candidate;
+  }
+  const currentTs = Number(current.updatedAt) || 0;
+  const candidateTs = Number(candidate.updatedAt) || 0;
+  if (candidateTs > currentTs) {
+    return candidate;
+  }
+  if (candidateTs < currentTs) {
+    return current;
+  }
+  if (candidate.text.length > current.text.length) {
+    return candidate;
+  }
+  if (candidate.text.length < current.text.length) {
+    return current;
+  }
+  if ((toPositiveInt(candidate.modeNth) || 0) > (toPositiveInt(current.modeNth) || 0)) {
+    return candidate;
+  }
+  return current;
+}
+
+function isSameLocalRemark(leftInput, rightInput) {
+  const left = normalizeLocalRemarkValue(leftInput);
+  const right = normalizeLocalRemarkValue(rightInput);
+  if (!left && !right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.text === right.text &&
+    (toPositiveInt(left.modeNth) || 0) === (toPositiveInt(right.modeNth) || 0) &&
+    (Number(left.updatedAt) || 0) === (Number(right.updatedAt) || 0)
+  );
+}
+
 function reindexLocalRemarkMapByTime(records = [], remarks = {}, modeKey = "") {
   const recordByKey = new Map();
   (Array.isArray(records) ? records : []).forEach((record) => {
@@ -452,6 +583,36 @@ function normalizeLocalRemarkMap(raw = {}, records = []) {
   });
   reindexLocalRemarkMapByTime(records, out);
   return out;
+}
+
+function collectLocalRemarksFromRecords(records = []) {
+  const out = {};
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const key = buildLocalRecordIdentityKey(record);
+    if (!key) return;
+    const remark = extractLocalRemarkFromRecord(record);
+    if (!remark) return;
+    out[key] = pickPreferredLocalRemark(out[key], remark);
+  });
+  return out;
+}
+
+function syncLocalRemarksBetweenStoreAndRecords(records = [], rawRemarks = {}) {
+  const normalizedRecords = Array.isArray(records) ? records : [];
+  const mergedRemarks = normalizeLocalRemarkMap(rawRemarks, normalizedRecords);
+  const remarksFromRecords = collectLocalRemarksFromRecords(normalizedRecords);
+  Object.entries(remarksFromRecords).forEach(([key, remark]) => {
+    const preferred = pickPreferredLocalRemark(mergedRemarks[key], remark);
+    if (preferred) {
+      mergedRemarks[key] = preferred;
+    }
+  });
+  reindexLocalRemarkMapByTime(normalizedRecords, mergedRemarks);
+  normalizedRecords.forEach((record) => {
+    const key = buildLocalRecordIdentityKey(record);
+    applyLocalRemarkToRecord(record, key ? mergedRemarks[key] : null);
+  });
+  return mergedRemarks;
 }
 
 function predictLocalRemarkNthByTime(records = [], remarks = {}, targetRecord = {}) {
@@ -765,25 +926,29 @@ function loadLocalStatsStore() {
   const records = Array.isArray(raw?.records)
     ? raw.records
         .filter((item) => item && typeof item === "object")
-        .map((item) => ({
-          dsRoomId: String(item.dsRoomId || "").trim(),
-          mapName: String(item.mapName || "").trim() || "未知地图",
-          mapId: toPositiveInt(item.mapId) || 0,
-          diffName: normalizeDifficultyName(item.diffName),
-          eventTime: String(item.eventTime || "").trim(),
-          startTime: String(pickFirst(item, ["startTime", "dtGameStartTime"], "")).trim(),
-          score: toPositiveInt(pickFirst(item, ["score", "iScore"], 0)) || 0,
-          duration:
-            toPositiveInt(
-              pickFirst(item, ["duration", "iDuration", "iUseTime", "useTime", "costTime"], 0)
-            ) || 0,
-          isWin: Number(item.isWin) === 1 ? 1 : 0,
-          modeName: String(item.modeName || "").trim() || "未知",
-          sourceType: normalizeLocalRecordSource(
-            pickFirst(item, ["sourceType", "recordSource", "dataSource", "source"], ""),
-            LOCAL_RECORD_SOURCE.OFFICIAL
-          )
-        }))
+        .map((item) => {
+          const record = {
+            dsRoomId: String(item.dsRoomId || "").trim(),
+            mapName: String(item.mapName || "").trim() || "未知地图",
+            mapId: toPositiveInt(item.mapId) || 0,
+            diffName: normalizeDifficultyName(item.diffName),
+            eventTime: String(item.eventTime || "").trim(),
+            startTime: String(pickFirst(item, ["startTime", "dtGameStartTime"], "")).trim(),
+            score: toPositiveInt(pickFirst(item, ["score", "iScore"], 0)) || 0,
+            duration:
+              toPositiveInt(
+                pickFirst(item, ["duration", "iDuration", "iUseTime", "useTime", "costTime"], 0)
+              ) || 0,
+            isWin: Number(item.isWin) === 1 ? 1 : 0,
+            modeName: String(item.modeName || "").trim() || "未知",
+            sourceType: normalizeLocalRecordSource(
+              pickFirst(item, ["sourceType", "recordSource", "dataSource", "source"], ""),
+              LOCAL_RECORD_SOURCE.OFFICIAL
+            )
+          };
+          applyLocalRemarkToRecord(record, extractLocalRemarkFromRecord(item));
+          return record;
+        })
         .filter((item) => item.dsRoomId)
     : [];
   const manual = Array.isArray(raw?.manual)
@@ -809,7 +974,7 @@ function loadLocalStatsStore() {
     0
   );
   const importCounter = Math.max(toPositiveInt(raw?.importCounter) || 0, maxBatch);
-  const remarks = normalizeLocalRemarkMap(raw?.remarks, records);
+  syncLocalRemarksBetweenStoreAndRecords(records, raw?.remarks);
 
   return {
     uin: normalizeUin(raw?.uin) || normalizeUin(currentUin) || "",
@@ -817,21 +982,21 @@ function loadLocalStatsStore() {
     updatedAt: Number(raw?.updatedAt) || 0,
     records,
     manual,
-    importCounter,
-    remarks
+    importCounter
   };
 }
 
 function saveLocalStatsStore(store) {
   const filePath = getLocalStatsPath();
+  const records = Array.isArray(store?.records) ? store.records : [];
+  syncLocalRemarksBetweenStoreAndRecords(records, store?.remarks);
   writeJsonFile(filePath, {
     uin: normalizeUin(store?.uin) || normalizeUin(currentUin) || "",
     version: 3,
     updatedAt: Number(store?.updatedAt) || Date.now(),
-    records: Array.isArray(store?.records) ? store.records : [],
+    records,
     manual: Array.isArray(store?.manual) ? store.manual : [],
-    importCounter: toPositiveInt(store?.importCounter) || 0,
-    remarks: normalizeLocalRemarkMap(store?.remarks, store?.records)
+    importCounter: toPositiveInt(store?.importCounter) || 0
   });
 }
 
@@ -846,8 +1011,7 @@ function ensureLocalStatsStoreFile() {
     updatedAt: Date.now(),
     records: [],
     manual: [],
-    importCounter: 0,
-    remarks: {}
+    importCounter: 0
   });
 }
 
@@ -1010,7 +1174,9 @@ function buildLocalMapStatsFromRuntime(configMapping = {}) {
 function buildLocalRecordListFromRuntime(runtimeInput = null) {
   const runtime = runtimeInput && typeof runtimeInput === "object" ? runtimeInput : ensureLocalRuntime();
   const list = Array.isArray(runtime?.store?.records) ? runtime.store.records : [];
-  const remarks = normalizeLocalRemarkMap(runtime?.store?.remarks, list);
+  const remarks = collectLocalRemarksFromRecords(list);
+  reindexLocalRemarkMapByTime(list, remarks);
+  syncLocalRemarksBetweenStoreAndRecords(list, remarks);
   return [...list]
     .filter((item) => {
       const roomId = String(item?.dsRoomId || "").trim();
@@ -1021,18 +1187,20 @@ function buildLocalRecordListFromRuntime(runtimeInput = null) {
       return true;
     })
     .map((item) => ({
+      ...item,
       ...(function () {
         const key = buildLocalRecordIdentityKey(item);
-        const remark = remarks[key];
+        const remark = pickPreferredLocalRemark(remarks[key], extractLocalRemarkFromRecord(item));
         const text = sanitizeLocalRemarkText(remark?.text || "");
         return {
           remarkKey: key,
+          remark: text,
           remarkText: text,
           remarkModeNth: text ? toPositiveInt(remark?.modeNth) || 1 : 0,
+          remarkNth: text ? toPositiveInt(remark?.modeNth) || 1 : 0,
           remarkUpdatedAt: Number(remark?.updatedAt) || 0
         };
       })(),
-      ...item,
       roomID: String(item?.dsRoomId || "").trim(),
       iIsWin: Number(item?.isWin) === 1 ? 1 : 0,
       iScore: toPositiveInt(item?.score) || 0,
@@ -1107,7 +1275,7 @@ function normalizeLocalGameRecord(game, configMapping, prepared = null) {
     LOCAL_RECORD_SOURCE.OFFICIAL
   );
 
-  return {
+  const normalizedRecord = {
     dsRoomId,
     mapName: mapName || "未知地图",
     mapId: mapId > 0 ? mapId : 0,
@@ -1120,6 +1288,8 @@ function normalizeLocalGameRecord(game, configMapping, prepared = null) {
     modeName,
     sourceType
   };
+  applyLocalRemarkToRecord(normalizedRecord, extractLocalRemarkFromRecord(game));
+  return normalizedRecord;
 }
 
 function mergeLocalStats(games, configMapping) {
@@ -1192,6 +1362,12 @@ function mergeLocalStats(games, configMapping) {
             existing.sourceType = LOCAL_RECORD_SOURCE.JSON_TRANSFER;
             changed = true;
           }
+          const existingRemark = extractLocalRemarkFromRecord(existing);
+          const mergedRemark = pickPreferredLocalRemark(existingRemark, extractLocalRemarkFromRecord(record));
+          if (!isSameLocalRemark(existingRemark, mergedRemark)) {
+            applyLocalRemarkToRecord(existing, mergedRemark);
+            changed = true;
+          }
           if (changed) {
             upgraded += 1;
           }
@@ -1251,6 +1427,7 @@ function mergeLocalStats(games, configMapping) {
 
   if (inserted > 0 || upgraded > 0) {
     runtime.store.records.sort((a, b) => toTimestamp(b.eventTime) - toTimestamp(a.eventTime));
+    syncLocalRemarksBetweenStoreAndRecords(runtime.store.records);
     runtime.store.updatedAt = Date.now();
     saveLocalStatsStore(runtime.store);
   }
@@ -1324,8 +1501,7 @@ function clearLocalStats() {
       updatedAt: Date.now(),
       records: [],
       manual: [],
-      importCounter: 0,
-      remarks: {}
+      importCounter: 0
     },
     idSet: new Set(),
     aggMap: new Map()
@@ -1763,7 +1939,7 @@ function normalizeImportedJsonRecord(item = {}) {
   if (!dsRoomId) {
     return null;
   }
-  return {
+  const normalized = {
     dsRoomId,
     mapName: String(pickFirst(record, ["mapName", "sMapName", "地图名称"], "未知地图")).trim() || "未知地图",
     mapId: toPositiveInt(pickFirst(record, ["mapId", "iMapId", "地图ID"], 0)) || 0,
@@ -1783,6 +1959,8 @@ function normalizeImportedJsonRecord(item = {}) {
       LOCAL_RECORD_SOURCE.JSON_TRANSFER
     )
   };
+  applyLocalRemarkToRecord(normalized, extractLocalRemarkFromRecord(record));
+  return normalized;
 }
 
 function importLocalStatsFromJsonPayload(payload = {}) {
@@ -1811,10 +1989,15 @@ function importLocalStatsFromJsonPayload(payload = {}) {
       : Array.isArray(payload)
         ? payload
         : [];
-  const gameList = recordList
+  const normalizedIncomingRecords = recordList
     .map((item) => normalizeImportedJsonRecord(item))
     .filter(Boolean)
     .map((item) => ({
+      ...item,
+      __remark: extractLocalRemarkFromRecord(item),
+      __identityKey: buildLocalRecordIdentityKey(item)
+    }));
+  const gameList = normalizedIncomingRecords.map((item) => ({
       DsRoomId: item.dsRoomId,
       mapName: item.mapName,
       iMapId: item.mapId,
@@ -1825,28 +2008,52 @@ function importLocalStatsFromJsonPayload(payload = {}) {
       iScore: item.score,
       iDuration: item.duration,
       iIsWin: item.isWin,
+      remarkText: item.remarkText,
+      remark: item.remarkText,
+      remarkModeNth: item.remarkModeNth,
+      remarkNth: item.remarkNth,
+      remarkUpdatedAt: item.remarkUpdatedAt,
       recordSource: isLocalTransferPayload
         ? LOCAL_RECORD_SOURCE.JSON_TRANSFER
         : item.sourceType
     }));
   const merged = mergeLocalStats(gameList, latestConfigMapping);
   const runtime = ensureLocalRuntime();
-  const currentRemarks = normalizeLocalRemarkMap(runtime?.store?.remarks, runtime?.store?.records);
+  const storeRecords = Array.isArray(runtime?.store?.records) ? runtime.store.records : [];
+  const storeByRoomId = new Map(
+    storeRecords.map((item) => [String(item?.dsRoomId || "").trim(), item])
+  );
+  const storeByIdentity = new Map(
+    storeRecords
+      .map((item) => [buildLocalRecordIdentityKey(item), item])
+      .filter(([key]) => Boolean(key))
+  );
+  normalizedIncomingRecords.forEach((item) => {
+    const incomingRemark = normalizeLocalRemarkValue(item?.__remark || extractLocalRemarkFromRecord(item));
+    if (!incomingRemark) return;
+    const roomId = String(item?.dsRoomId || "").trim();
+    const identityKey = String(item?.__identityKey || "").trim();
+    const target =
+      (roomId ? storeByRoomId.get(roomId) : null) ||
+      (identityKey ? storeByIdentity.get(identityKey) : null) ||
+      null;
+    if (!target) return;
+    const currentRemark = extractLocalRemarkFromRecord(target);
+    const preferred = pickPreferredLocalRemark(currentRemark, incomingRemark);
+    if (!isSameLocalRemark(currentRemark, preferred)) {
+      applyLocalRemarkToRecord(target, preferred);
+    }
+  });
+  const mergedRemarks = collectLocalRemarksFromRecords(runtime?.store?.records);
+  reindexLocalRemarkMapByTime(runtime?.store?.records, mergedRemarks);
   const incomingRemarks = normalizeLocalRemarkMap(data?.remarks, runtime?.store?.records);
   Object.entries(incomingRemarks).forEach(([key, remark]) => {
-    const text = sanitizeLocalRemarkText(remark?.text || "");
-    if (!text) {
-      delete currentRemarks[key];
-      return;
+    const preferred = pickPreferredLocalRemark(mergedRemarks[key], remark);
+    if (preferred) {
+      mergedRemarks[key] = preferred;
     }
-    currentRemarks[key] = {
-      modeNth: toPositiveInt(remark?.modeNth) || 0,
-      text,
-      updatedAt: Number(remark?.updatedAt) || Date.now()
-    };
   });
-  reindexLocalRemarkMapByTime(runtime?.store?.records, currentRemarks);
-  runtime.store.remarks = currentRemarks;
+  syncLocalRemarksBetweenStoreAndRecords(runtime?.store?.records, mergedRemarks);
   runtime.store.updatedAt = Date.now();
   saveLocalStatsStore(runtime.store);
   localStatsRuntime = buildRuntimeFromStore(runtime.store);
@@ -1870,14 +2077,20 @@ function exportLocalRecordsToJson(filePath) {
         )
       }))
     : [];
+  syncLocalRemarksBetweenStoreAndRecords(records);
+  const normalizedRecords = records.map((item) => ({
+    ...item,
+    remarkText: sanitizeLocalRemarkText(item?.remarkText),
+    remarkModeNth: toPositiveInt(item?.remarkModeNth) || 0,
+    remarkUpdatedAt: Number(item?.remarkUpdatedAt) || 0
+  }));
   const payload = {
     transferMarker: LOCAL_JSON_TRANSFER_MARK,
     transferType: "local-export-import",
     uin: normalizeUin(currentUin) || "",
     exportedAt: Date.now(),
-    count: records.length,
-    records,
-    remarks: normalizeLocalRemarkMap(runtime?.store?.remarks, runtime?.store?.records)
+    count: normalizedRecords.length,
+    records: normalizedRecords
   };
   writeJsonFile(filePath, payload);
   return payload;
@@ -1929,7 +2142,8 @@ function saveLocalBattleRemark(payload = {}) {
     throw new Error("该战绩缺少唯一标识，无法备注");
   }
   const cleanText = sanitizeLocalRemarkText(payload?.text);
-  const remarks = normalizeLocalRemarkMap(runtime?.store?.remarks, records);
+  const remarks = collectLocalRemarksFromRecords(records);
+  reindexLocalRemarkMapByTime(records, remarks);
   if (!cleanText) {
     delete remarks[key];
   } else {
@@ -1941,13 +2155,15 @@ function saveLocalBattleRemark(payload = {}) {
     };
   }
   reindexLocalRemarkMapByTime(records, remarks, buildLocalRemarkModeKey(record));
+  // Keep record-level remark in sync before merge to avoid resurrecting cleared text.
+  applyLocalRemarkToRecord(record, remarks[key] || null);
 
-  runtime.store.remarks = remarks;
+  const nextRemarks = syncLocalRemarksBetweenStoreAndRecords(records, remarks);
   runtime.store.updatedAt = Date.now();
   saveLocalStatsStore(runtime.store);
   localStatsRuntime = buildRuntimeFromStore(runtime.store);
 
-  const currentRemark = remarks[key] || null;
+  const currentRemark = nextRemarks[key] || null;
   return {
     localMapStats: buildLocalMapStatsFromRuntime(latestConfigMapping),
     localRecords: buildLocalRecordListFromRuntime(localStatsRuntime),
@@ -2057,11 +2273,16 @@ function buildQiniuFileUrl(protocol, domain, key, withTs = false) {
   return `${base}/${encodedKey}${suffix}`;
 }
 
-function buildQiniuPrivateDownloadUrl(config, key, expireEpoch) {
+function buildQiniuPrivateDownloadUrl(config, key, expireEpoch, options = {}) {
   const safeExpire = Number(expireEpoch) > 0 ? Number(expireEpoch) : Math.floor(Date.now() / 1000) + 300;
+  const useCacheBust = Boolean(options?.cacheBust);
+  const cacheBustTs =
+    Number(options?.cacheBustTs) > 0 ? Number(options.cacheBustTs) : Date.now();
   const qiniu = getQiniuSdk();
   const mac = new qiniu.auth.digest.Mac(config.accessKey, config.secretKey);
-  const publicUrl = buildQiniuFileUrl(config.protocol, config.domain, key, false);
+  const publicUrlRaw = buildQiniuFileUrl(config.protocol, config.domain, key, false);
+  const publicSeparator = publicUrlRaw.includes("?") ? "&" : "?";
+  const publicUrl = useCacheBust ? `${publicUrlRaw}${publicSeparator}ts=${cacheBustTs}` : publicUrlRaw;
   if (qiniu?.util && typeof qiniu.util.privateDownloadUrl === "function") {
     return qiniu.util.privateDownloadUrl(publicUrl, safeExpire, mac);
   }
@@ -2074,6 +2295,187 @@ function buildQiniuPrivateDownloadUrl(config, key, expireEpoch) {
     .replace(/\+/g, "-")
     .replace(/\//g, "_");
   return `${downloadUrl}&token=${config.accessKey}:${digest}`;
+}
+
+function buildQiniuCloudBaseName(uin) {
+  const normalized = normalizeUin(uin) || "unknown";
+  return `local-stats${normalized}-cloud`;
+}
+
+function buildQiniuCloudLegacyFileName(uin) {
+  return `${buildQiniuCloudBaseName(uin)}.json`;
+}
+
+function buildQiniuCloudVersionedFileName(uin, stampMs) {
+  const safeStamp = Number(stampMs) > 0 ? Number(stampMs) : Date.now();
+  return `${buildQiniuCloudBaseName(uin)}-${safeStamp}.json`;
+}
+
+function buildQiniuCloudObjectKey(config, fileName) {
+  const safeFileName = String(fileName || "").trim();
+  if (!safeFileName) {
+    return "";
+  }
+  const basePath = String(config?.path || "").trim();
+  return basePath ? `${basePath}/${safeFileName}` : safeFileName;
+}
+
+function createQiniuManagementToken(config, pathWithQuery, body = "") {
+  const safePath = String(pathWithQuery || "").trim();
+  if (!safePath) {
+    return "";
+  }
+  const safeBody = String(body || "");
+  const signTarget = safeBody ? `${safePath}\n${safeBody}` : `${safePath}\n`;
+  const digest = crypto
+    .createHmac("sha1", String(config?.secretKey || ""))
+    .update(signTarget)
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return `${String(config?.accessKey || "").trim()}:${digest}`;
+}
+
+function encodeQiniuEntryUri(bucket, key) {
+  const raw = `${String(bucket || "").trim()}:${String(key || "").trim()}`;
+  return Buffer.from(raw)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function isQiniuCloudObjectKeyForUin(config, uin, key) {
+  const cloudBase = buildQiniuCloudBaseName(uin);
+  const legacyFile = buildQiniuCloudLegacyFileName(uin);
+  const keyText = String(key || "").trim();
+  if (!keyText) {
+    return false;
+  }
+  const fileName = String(keyText.split("/").pop() || "").trim();
+  if (!fileName) {
+    return false;
+  }
+  if (fileName === legacyFile) {
+    return true;
+  }
+  return fileName.startsWith(`${cloudBase}-`) && fileName.endsWith(".json");
+}
+
+async function listQiniuCloudObjects(config, uin, limit = 100) {
+  const prefix = buildQiniuCloudObjectKey(config, buildQiniuCloudBaseName(uin));
+  if (!prefix) {
+    return [];
+  }
+  const safeLimit = Math.min(Math.max(toPositiveInt(limit) || 100, 1), 1000);
+  const query =
+    `bucket=${encodeURIComponent(String(config?.bucket || "").trim())}` +
+    `&prefix=${encodeURIComponent(prefix)}` +
+    `&limit=${safeLimit}`;
+  const pathWithQuery = `/list?${query}`;
+  const token = createQiniuManagementToken(config, pathWithQuery);
+  if (!token) {
+    return [];
+  }
+  try {
+    const response = await fetch(`https://rsf.qiniuapi.com${pathWithQuery}`, {
+      method: "GET",
+      headers: {
+        Authorization: `QBox ${token}`,
+        Accept: "application/json",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache"
+      }
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const raw = await response.text();
+    const parsed = JSON.parse(raw || "{}");
+    const items = Array.isArray(parsed?.items) ? parsed.items : [];
+    return items
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        key: String(item.key || "").trim(),
+        putTime: Number(item.putTime) || 0
+      }))
+      .filter((item) => item.key && isQiniuCloudObjectKeyForUin(config, uin, item.key))
+      .sort((a, b) => {
+        if (a.putTime !== b.putTime) return b.putTime - a.putTime;
+        return b.key.localeCompare(a.key);
+      });
+  } catch (_) {
+    return [];
+  }
+  return [];
+}
+
+async function resolveLatestQiniuCloudKey(config, uin, fallbackKey = "") {
+  const objects = await listQiniuCloudObjects(config, uin, 100);
+  if (objects[0]?.key) {
+    return objects[0].key;
+  }
+  return String(fallbackKey || "").trim();
+}
+
+async function batchDeleteQiniuObjects(config, keys = []) {
+  const safeBucket = String(config?.bucket || "").trim();
+  const safeKeys = (Array.isArray(keys) ? keys : [])
+    .map((key) => String(key || "").trim())
+    .filter(Boolean);
+  if (!safeBucket || !safeKeys.length) {
+    return 0;
+  }
+  const pathWithQuery = "/batch";
+  const body = safeKeys
+    .map((key) => `op=delete/${encodeQiniuEntryUri(safeBucket, key)}`)
+    .join("&");
+  const token = createQiniuManagementToken(config, pathWithQuery, body);
+  if (!token) {
+    return 0;
+  }
+  try {
+    const response = await fetch(`https://rs.qiniuapi.com${pathWithQuery}`, {
+      method: "POST",
+      headers: {
+        Authorization: `QBox ${token}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      },
+      body
+    });
+    if (!response.ok) {
+      return 0;
+    }
+    const text = await response.text();
+    const parsed = JSON.parse(text || "[]");
+    if (!Array.isArray(parsed)) {
+      return 0;
+    }
+    return parsed.filter((item) => Number(item?.code) === 200).length;
+  } catch (_) {
+    return 0;
+  }
+}
+
+async function pruneQiniuCloudObjects(config, uin, keepCount = 2) {
+  const safeKeep = Math.max(toPositiveInt(keepCount) || 2, 1);
+  const objects = await listQiniuCloudObjects(config, uin, 1000);
+  if (objects.length <= safeKeep) {
+    return {
+      deletedCount: 0,
+      keptCount: objects.length
+    };
+  }
+  const deleteKeys = objects
+    .slice(safeKeep)
+    .map((item) => item.key)
+    .filter((key) => isQiniuCloudObjectKeyForUin(config, uin, key));
+  const deletedCount = await batchDeleteQiniuObjects(config, deleteKeys);
+  return {
+    deletedCount,
+    keptCount: objects.length - deletedCount
+  };
 }
 
 function buildCloudStatsObject(configInput = {}) {
@@ -2094,8 +2496,8 @@ function buildCloudStatsObject(configInput = {}) {
   }
 
   const uin = normalizeUin(currentUin) || normalizeUin(currentStats?.uin) || "unknown";
-  const fileName = `local-stats${uin}-cloud.json`;
-  const key = config.path ? `${config.path}/${fileName}` : fileName;
+  const fileName = buildQiniuCloudLegacyFileName(uin);
+  const key = buildQiniuCloudObjectKey(config, fileName);
   const records = Array.isArray(currentStats?.records)
     ? currentStats.records.map((item) => ({
         ...item,
@@ -2105,17 +2507,26 @@ function buildCloudStatsObject(configInput = {}) {
         )
       }))
     : [];
+  syncLocalRemarksBetweenStoreAndRecords(records, currentStats?.remarks);
+  const normalizedRecords = records.map((item) => ({
+    ...item,
+    remarkText: sanitizeLocalRemarkText(item?.remarkText),
+    remarkModeNth: toPositiveInt(item?.remarkModeNth) || 0,
+    remarkUpdatedAt: Number(item?.remarkUpdatedAt) || 0
+  }));
+  const basePayload = { ...currentStats };
+  delete basePayload.remarks;
   const now = Date.now();
   const cloudPayload = {
-    ...currentStats,
+    ...basePayload,
     uin,
     transferMarker: LOCAL_JSON_TRANSFER_MARK,
     transferType: "cloud",
     sourceType: LOCAL_RECORD_SOURCE.JSON_TRANSFER,
     exportedAt: now,
     cloudSyncedAt: now,
-    count: records.length,
-    records
+    count: normalizedRecords.length,
+    records: normalizedRecords
   };
   return {
     config,
@@ -2158,9 +2569,14 @@ function testQiniuConnectivityNoUpload(configInput = {}) {
 async function syncLocalStatsToQiniu() {
   const prepared = buildCloudStatsObject(qiniuConfigStore);
   const config = prepared.config;
-  const key = prepared.key;
-  const fileName = prepared.fileName;
-  const body = JSON.stringify(prepared.cloudPayload, null, 2);
+  const syncStamp = Number(prepared?.cloudPayload?.cloudSyncedAt) || Date.now();
+  const fileName = buildQiniuCloudVersionedFileName(prepared.uin, syncStamp);
+  const key = buildQiniuCloudObjectKey(config, fileName);
+  const payload = {
+    ...prepared.cloudPayload,
+    cloudObjectKey: key
+  };
+  const body = JSON.stringify(payload, null, 2);
   const qiniu = getQiniuSdk();
   const uploadToken = createQiniuUploadToken(config, key);
   const qnConfig = new qiniu.conf.Config();
@@ -2181,6 +2597,7 @@ async function syncLocalStatsToQiniu() {
       resolve(respBody || {});
     });
   });
+  const pruneResult = await pruneQiniuCloudObjects(config, prepared.uin, 2);
   const expireAt = Math.floor(Date.now() / 1000) + 300;
   const privateUrl = buildQiniuPrivateDownloadUrl(config, key, expireAt);
 
@@ -2192,18 +2609,29 @@ async function syncLocalStatsToQiniu() {
     expireAt,
     uploadScope: `${config.bucket}:${key}`,
     overwrite: true,
-    response: uploaded
+    response: uploaded,
+    pruneDeleted: Number(pruneResult?.deletedCount) || 0,
+    pruneKept: Number(pruneResult?.keptCount) || 0
   };
 }
 
 async function pullLocalStatsFromQiniu() {
   const prepared = buildCloudStatsObject(qiniuConfigStore);
+  const resolvedKey = await resolveLatestQiniuCloudKey(prepared.config, prepared.uin, prepared.key);
+  const key = String(resolvedKey || prepared.key).trim() || prepared.key;
+  const fileName = String(key.split("/").pop() || "").trim() || prepared.fileName;
   const expireAt = Math.floor(Date.now() / 1000) + 300;
-  const url = buildQiniuPrivateDownloadUrl(prepared.config, prepared.key, expireAt);
+  const url = buildQiniuPrivateDownloadUrl(prepared.config, key, expireAt, {
+    cacheBust: true,
+    cacheBustTs: Date.now()
+  });
   const response = await fetch(url, {
     method: "GET",
     headers: {
-      Accept: "application/json"
+      Accept: "application/json",
+      "Cache-Control": "no-cache, no-store, max-age=0",
+      Pragma: "no-cache",
+      Expires: "0"
     }
   });
   const bodyText = await response.text();
@@ -2219,8 +2647,8 @@ async function pullLocalStatsFromQiniu() {
 
   const imported = importLocalStatsFromJsonPayload(payload);
   return {
-    key: prepared.key,
-    fileName: prepared.fileName,
+    key,
+    fileName,
     url,
     inserted: imported.inserted,
     upgraded: imported.upgraded,
@@ -3311,4 +3739,5 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
+
 

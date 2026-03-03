@@ -4,9 +4,8 @@
 
 谨防上当受骗。
 
-## 功能概览 （2026-03-03）
+## 功能概览 （2026-03-01）
 
-- 已去除早期开源仓库(网页)接口 全面使用官方接口
 - 账号绑定（多账号）
   - 使用 `openid + access_token` 绑定。
   - 账号信息保存在 `data/account-binding.json`。
@@ -31,7 +30,6 @@
 - 本地战绩
   - 从本地 JSON 展示战绩列表。
   - 支持自动筛选。
-  - 支持备注
 
 - 图鉴
   - 武器/陷阱图鉴展示与拥有率显示。
@@ -65,8 +63,8 @@
 
 ### 工具EXE 下载
 
-- OneDrive：[点我下载]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQCm5Udy_8xlQ4AMa-RBbeSSAerthHDW5yh7eFvkGs3E-2o?e=75VoCP>
-- 移动云盘：[点我下载]<https://yun.139.com/shareweb/#/w/i/2tyanM53Tiz0g>
+- OneDrive：[点我下载]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQBlKBKOqfryT5C6xXXOtTfoARKvkofqv44lG8iY4XqCLDE?e=dGkCPT>
+- 移动云盘：[点我下载]<https://yun.139.com/shareweb/#/w/i/2tyavYG5xqsyi>
 
 ## 功能截图
 
