@@ -60,13 +60,13 @@
 
 ### 获取token工具下载
 
-- OneDrive：[点我下载]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I>
-- 移动云盘：[点我下载]<https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0>
+- OneDrive：[点我下载](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQAnCJV8iVLoR5wb9IWGpL_bAeyPHND3ZTXBUyP8eUuxisg?e=DkkS1I)
+- 移动云盘：[点我下载](https://yun.139.com/shareweb/#/w/i/2sUfJiUmha9p0)
 
 ### 工具EXE 下载
 
-- OneDrive：[点我下载]<https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQBlKBKOqfryT5C6xXXOtTfoARKvkofqv44lG8iY4XqCLDE?e=dGkCPT>
-- 移动云盘：[点我下载]<https://yun.139.com/shareweb/#/w/i/2tyavYG5xqsyi>
+- OneDrive：[点我下载](https://1drv.ms/u/c/1ebfb8cb31d9e48a/IQBlKBKOqfryT5C6xXXOtTfoARKvkofqv44lG8iY4XqCLDE?e=dGkCPT)
+- 移动云盘：[点我下载](https://yun.139.com/shareweb/#/w/i/2tyavYG5xqsyi)
 
 ## 功能截图
 
